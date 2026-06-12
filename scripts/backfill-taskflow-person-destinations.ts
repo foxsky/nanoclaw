@@ -57,19 +57,27 @@ function main(): void {
   });
   tfDb.close();
   console.log(`\n${args.dryRun ? '=== DRY RUN ===' : '=== BACKFILL COMPLETE ==='}`);
-  console.log(`Rows processed: ${report.rows_processed}`);
   console.log(`Unresolved boards: ${report.unresolved_boards}`);
   console.log(`Messaging groups: ${report.messaging_groups_inserted} new, ${report.messaging_groups_reused} reused`);
   console.log(`Destinations: ${report.destinations_inserted} new, ${report.destinations_skipped} already present`);
   console.log(`Display-name collisions: ${report.name_collisions}`);
   console.log('\nRestart affected agent containers so inbound destination projections refresh.');
-  // Fail-loud gate for the cutover migrate step: a name collision means a
-  // person's send_message would mis-route to a same-named teammate.
-  if (report.name_collisions > 0 || report.unresolved_boards > 0) {
-    console.error(`ERROR: ${report.name_collisions} name collision(s), ${report.unresolved_boards} unresolved board(s) — resolve before relying on per-person forwarding.`);
-    closeDb();
-    process.exit(1);
+  // Surface data-quality issues as `ERROR:` lines but do NOT exit(1): the
+  // migrate-v2.sh run_step promotes the step to "degraded/partial" on any
+  // `^ERROR:` line, so a collision/unresolved is reported in the summary +
+  // handoff.json without aborting a cutover that has already copied all core
+  // + taskflow state. The host startup self-heal re-runs this backfill
+  // idempotently on every boot, so the gap is recoverable (fix wiring,
+  // reboot) — a hard abort here would strand the operator instead.
+  if (report.name_collisions > 0) {
+    console.error(`ERROR: ${report.name_collisions} display-name collision(s) — a person's send_message would mis-route to a same-named teammate; resolve the duplicate before relying on per-person forwarding.`);
   }
+  if (report.unresolved_boards > 0) {
+    console.error(`ERROR: ${report.unresolved_boards} unresolved board(s) — no matching v2 agent group; per-person forwarding stays unwired for them.`);
+  }
+  console.log(
+    `OK:rows=${report.rows_processed},dest_new=${report.destinations_inserted},dest_skip=${report.destinations_skipped},mg_new=${report.messaging_groups_inserted},collisions=${report.name_collisions},unresolved=${report.unresolved_boards}`,
+  );
   closeDb();
 }
 

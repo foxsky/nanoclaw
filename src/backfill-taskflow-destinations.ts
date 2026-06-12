@@ -20,7 +20,9 @@ import { log } from './log.js';
  * exist before its first wake.
  *
  * Fail-soft: a backfill error must NEVER crash boot. Collisions / unresolved
- * links are logged loud here; the migrate-v2.sh step is the cutover HARD gate.
+ * links are logged loud here; the migrate-v2.sh 1g/1h steps surface the same
+ * conditions as a "degraded" migration (they do NOT abort — this self-heal
+ * re-runs them every boot, so the gap is recoverable once the wiring is fixed).
  * No-op when the agent-to-agent module isn't installed (no `agent_destinations`).
  */
 export function backfillTaskflowDestinations(tfDb: Database.Database): void {
@@ -28,8 +30,16 @@ export function backfillTaskflowDestinations(tfDb: Database.Database): void {
 
   try {
     const r = backfillCrossBoardDestinations(tfDb, { dryRun: false, logger: (l) => log.debug(l.trim()) });
-    if (r.child_inserted + r.parent_inserted > 0 || r.unresolved > 0) {
+    if (r.child_inserted + r.parent_inserted > 0 || r.unresolved > 0 || r.name_collisions > 0) {
       log.info('Cross-board destinations backfilled', { ...r });
+    }
+    if (r.name_collisions > 0) {
+      log.warn(
+        'Cross-board destination backfill: name collisions — a reserved parent-/source- name points at the wrong group',
+        {
+          name_collisions: r.name_collisions,
+        },
+      );
     }
     if (r.unresolved > 0) {
       log.warn('Cross-board destination backfill left unresolved board links', { unresolved: r.unresolved });

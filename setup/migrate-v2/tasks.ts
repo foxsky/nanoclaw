@@ -172,7 +172,7 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       failed++;
-      console.error(`TASK_ERROR:${t.id}:${err instanceof Error ? err.message : String(err)}`);
+      console.error(`ERROR:task ${t.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

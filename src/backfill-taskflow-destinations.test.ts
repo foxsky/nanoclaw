@@ -19,7 +19,14 @@ const TMPROOT = path.join(os.tmpdir(), `nanoclaw-tf-dest-startup-${process.pid}`
 const now = '2026-06-11T00:00:00Z';
 let tfPath = '';
 
-function seedBoard(tfDb: Database.Database, id: string, folder: string, jid: string, parentId: string | null, level: number): void {
+function seedBoard(
+  tfDb: Database.Database,
+  id: string,
+  folder: string,
+  jid: string,
+  parentId: string | null,
+  level: number,
+): void {
   tfDb
     .prepare(
       `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
@@ -48,7 +55,11 @@ function seedV2Wiring(agentId: string, folder: string, mgId: string, platformId:
 }
 
 function destNames(agentGroupId: string): string[] {
-  return (getDb().prepare(`SELECT local_name FROM agent_destinations WHERE agent_group_id = ? ORDER BY local_name`).all(agentGroupId) as Array<{ local_name: string }>).map((r) => r.local_name);
+  return (
+    getDb()
+      .prepare(`SELECT local_name FROM agent_destinations WHERE agent_group_id = ? ORDER BY local_name`)
+      .all(agentGroupId) as Array<{ local_name: string }>
+  ).map((r) => r.local_name);
 }
 
 beforeEach(() => {
@@ -70,7 +81,9 @@ describe('backfillTaskflowDestinations (startup self-heal, F1/F2)', () => {
     seedBoard(tfDb, 'board-child', 'child-folder', '120363002@g.us', 'board-parent', 1);
     // a person on the child board → per-person destination
     tfDb
-      .prepare(`INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid) VALUES ('board-child', 'ana', 'Ana Souza', 'member', '120363555@g.us')`)
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid) VALUES ('board-child', 'ana', 'Ana Souza', 'member', '120363555@g.us')`,
+      )
       .run();
     tfDb.close();
     seedV2Wiring('ag-parent', 'parent-folder', 'mg-parent', '120363001@g.us');

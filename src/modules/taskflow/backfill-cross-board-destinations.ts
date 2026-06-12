@@ -38,6 +38,12 @@ export interface BackfillReport {
   child_skipped: number;
   parent_inserted: number;
   parent_skipped: number;
+  /** A reserved cross-board name (`parent-<folder>` / `source-<folder>`)
+   *  already exists pointing at a DIFFERENT messaging group than this link
+   *  needs → approval forwarding for the pair is miswired. Detected, not
+   *  silently counted as a benign skip (Codex migration-fidelity review:
+   *  symmetry with the per-person backfill's name_collisions). */
+  name_collisions: number;
   /** When dry_run=true, inserted counts reflect WOULD-INSERT operations
    *  (no rows actually written). */
   dry_run: boolean;
@@ -102,6 +108,7 @@ export function backfillCrossBoardDestinations(
     child_skipped: 0,
     parent_inserted: 0,
     parent_skipped: 0,
+    name_collisions: 0,
     dry_run: options.dryRun,
   };
   const now = new Date().toISOString();
@@ -118,8 +125,19 @@ export function backfillCrossBoardDestinations(
     const parentDestName = `parent-${link.parent_folder}`;
     const sourceDestName = `source-${link.child_folder}`;
 
-    if (getDestinationByName(child.agent_group_id, parentDestName)) {
+    const existingChild = getDestinationByName(child.agent_group_id, parentDestName);
+    if (existingChild) {
       report.child_skipped++;
+      // Already present, but does it point where THIS link needs? A mismatch
+      // means the reserved name was wired to a different group (stale/partial
+      // prior migration) → forwarding silently miswired. Surface, don't
+      // overwrite (the operator resolves it).
+      if (existingChild.target_id !== parent.messaging_group_id) {
+        report.name_collisions++;
+        log(
+          `  COLLISION: child ${child.agent_group_id} '${parentDestName}' already → ${existingChild.target_id}, not ${parent.messaging_group_id}`,
+        );
+      }
     } else if (options.dryRun) {
       log(`  DRY: child ${child.agent_group_id} += '${parentDestName}' → ${parent.messaging_group_id}`);
       report.child_inserted++;
@@ -134,8 +152,15 @@ export function backfillCrossBoardDestinations(
       report.child_inserted++;
     }
 
-    if (getDestinationByName(parent.agent_group_id, sourceDestName)) {
+    const existingParent = getDestinationByName(parent.agent_group_id, sourceDestName);
+    if (existingParent) {
       report.parent_skipped++;
+      if (existingParent.target_id !== child.messaging_group_id) {
+        report.name_collisions++;
+        log(
+          `  COLLISION: parent ${parent.agent_group_id} '${sourceDestName}' already → ${existingParent.target_id}, not ${child.messaging_group_id}`,
+        );
+      }
     } else if (options.dryRun) {
       log(`  DRY: parent ${parent.agent_group_id} += '${sourceDestName}' → ${child.messaging_group_id}`);
       report.parent_inserted++;

@@ -150,4 +150,152 @@ describe('backfillTaskflowPersonDestinations', () => {
       .get('120363407206502707@g.us') as { id: string };
     expect(dest?.target_id).toBe(mg1.id);
   });
+
+  it('dry-run still detects an in-run duplicate-name collision (writes nothing)', () => {
+    // Why this matters (Codex NICE): dry-run writes no rows, so the 2nd person
+    // would not be seen via getDestinationByName. The in-memory planned-insert
+    // map makes the PREVIEW report the same collision a real run would catch —
+    // otherwise an operator dry-running before cutover gets a false all-clear.
+    const tfDb = initTaskflowDb(tfPath);
+    seedBoard(tfDb); // Mauro Cesar → 120363407206502707@g.us
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'mauro2', 'Mauro Cesar', '120363999999999@g.us');
+    tfDb.close();
+    seedAgentGroup();
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillTaskflowPersonDestinations(ro, { boardId: 'board-seci-taskflow', dryRun: true });
+    ro.close();
+
+    expect(report.name_collisions).toBe(1);
+    expect(report.destinations_inserted).toBe(1); // WOULD-insert the first only
+    expect(report.destinations_skipped).toBe(1);
+    // Nothing actually written during dry-run.
+    const rowCount = getDb().prepare(`SELECT COUNT(*) AS n FROM agent_destinations`).get() as { n: number };
+    expect(rowCount.n).toBe(0);
+  });
+
+  it('does NOT throw when two person_ids normalize alike but route to different JIDs', () => {
+    // Why this matters (Codex xhigh MEDIUM): the messaging_group id used to be
+    // derived from normalizeIdPart(person_id). 'ana-1' and 'ana_1' normalize to
+    // the SAME string, so two distinct people with DIFFERENT JIDs generated the
+    // same id → the 2nd insert threw UNIQUE and aborted the whole pass (wedging
+    // boot self-heal). The id is now derived from the JID, so they don't collide.
+    const tfDb = initTaskflowDb(tfPath);
+    seedBoard(tfDb); // Mauro Cesar (unrelated, distinct name+jid)
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'ana-1', 'Ana Alpha', '120363111111111@g.us');
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'ana_1', 'Ana Beta', '120363222222222@g.us');
+    tfDb.close();
+    seedAgentGroup();
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillTaskflowPersonDestinations(ro, { boardId: 'board-seci-taskflow', dryRun: false });
+    ro.close();
+
+    // All three people wired; no UNIQUE throw, no false collision.
+    expect(report.rows_processed).toBe(3);
+    expect(report.messaging_groups_inserted).toBe(3);
+    expect(report.destinations_inserted).toBe(3);
+    expect(report.name_collisions).toBe(0);
+    // The two Anas point at DISTINCT messaging groups (their distinct JIDs).
+    const anaTargets = getDb()
+      .prepare(
+        `SELECT target_id FROM agent_destinations WHERE agent_group_id = ? AND local_name IN ('Ana Alpha','Ana Beta')`,
+      )
+      .all('ag-seci') as { target_id: string }[];
+    expect(new Set(anaTargets.map((r) => r.target_id)).size).toBe(2);
+  });
+
+  it('reuses one group for two same-named people who share a JID (not a collision)', () => {
+    // Why this matters (Codex xhigh NICE): same agent, same display name, SAME
+    // JID, different person_id is a legitimately shared notification group — it
+    // must reuse the group and skip the duplicate destination WITHOUT counting a
+    // collision (the JID-keyed dedup makes both resolve to the same target).
+    const tfDb = initTaskflowDb(tfPath);
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, short_code)
+         VALUES ('board-seci-taskflow', '120363001@g.us', 'seci-taskflow', 'hierarchy', 0, 3, 'SECI')`,
+      )
+      .run();
+    tfDb.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run('board-seci-taskflow', 7);
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'p1', 'Shared Team', '120363777@g.us');
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'p2', 'Shared Team', '120363777@g.us');
+    tfDb.close();
+    seedAgentGroup();
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillTaskflowPersonDestinations(ro, { boardId: 'board-seci-taskflow', dryRun: false });
+    ro.close();
+
+    expect(report.messaging_groups_inserted).toBe(1);
+    expect(report.messaging_groups_reused).toBe(1);
+    expect(report.destinations_inserted).toBe(1);
+    expect(report.destinations_skipped).toBe(1);
+    expect(report.name_collisions).toBe(0); // same target → not a collision
+  });
+
+  it('dry-run reuses one group for two same-JID people via plannedMgByJid (no false collision, no writes)', () => {
+    // Why this matters (Codex confirmation NICE): exercises the dry-run dedup
+    // path directly. With nothing written, the 2nd same-JID person must resolve
+    // through plannedMgByJid (reused), so it is NOT a false collision.
+    const tfDb = initTaskflowDb(tfPath);
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, short_code)
+         VALUES ('board-seci-taskflow', '120363001@g.us', 'seci-taskflow', 'hierarchy', 0, 3, 'SECI')`,
+      )
+      .run();
+    tfDb.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run('board-seci-taskflow', 7);
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'p1', 'Shared Team', '120363777@g.us');
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'p2', 'Shared Team', '120363777@g.us');
+    tfDb.close();
+    seedAgentGroup();
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillTaskflowPersonDestinations(ro, { boardId: 'board-seci-taskflow', dryRun: true });
+    ro.close();
+
+    expect(report.messaging_groups_inserted).toBe(1); // WOULD-insert once
+    expect(report.messaging_groups_reused).toBe(1); // 2nd resolves via plannedMgByJid
+    expect(report.destinations_inserted).toBe(1);
+    expect(report.destinations_skipped).toBe(1);
+    expect(report.name_collisions).toBe(0);
+    const rowCount = getDb().prepare(`SELECT COUNT(*) AS n FROM agent_destinations`).get() as { n: number };
+    expect(rowCount.n).toBe(0); // dry-run writes nothing
+  });
 });

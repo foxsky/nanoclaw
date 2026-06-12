@@ -9,6 +9,8 @@
  * raw-JID sends; the equivalent behavior is a first-class named destination
  * in agent_destinations pointing at a messaging_groups row.
  */
+import { createHash } from 'crypto';
+
 import type Database from 'better-sqlite3';
 
 import { getDb, hasTable } from '../../db/connection.js';
@@ -36,17 +38,6 @@ export interface PersonDestinationBackfillReport {
    *  not silently skipped (Codex migration-fidelity review). */
   name_collisions: number;
   dry_run: boolean;
-}
-
-function normalizeIdPart(value: string): string {
-  return (
-    value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'unnamed'
-  );
 }
 
 export function readPersonNotificationRows(tfDb: Database.Database, boardId?: string): PersonNotificationRow[] {
@@ -86,6 +77,18 @@ function insertMessagingGroup(id: string, platformId: string, name: string, now:
     .run(id, platformId, name, now);
 }
 
+/**
+ * Derive the messaging_groups.id from the JID — the row's REAL identity
+ * (messaging_groups dedupes on UNIQUE(channel_type, platform_id)). Deriving it
+ * from person_id was LOSSY: two distinct person_ids that normalize to the same
+ * string (e.g. `ana-1` / `ana_1`) but route to different JIDs collided on the
+ * `id` PK, so the 2nd insert threw UNIQUE and aborted the whole pass mid-loop
+ * (Codex xhigh). A hash of the JID is collision-proof and stable across re-runs.
+ */
+function personMessagingGroupId(jid: string): string {
+  return `mg-taskflow-person-${createHash('sha1').update(jid).digest('hex').slice(0, 16)}`;
+}
+
 export function backfillTaskflowPersonDestinations(
   tfDb: Database.Database,
   options: { boardId?: string; dryRun: boolean; logger?: (line: string) => void },
@@ -106,6 +109,15 @@ export function backfillTaskflowPersonDestinations(
     dry_run: options.dryRun,
   };
   const now = new Date().toISOString();
+  // Tracks (agent_group_id, name) → messagingGroupId for destinations created
+  // (or, in dry-run, WOULD be created) earlier in THIS pass. Real runs also
+  // see prior inserts via getDestinationByName; dry-run writes nothing, so
+  // without this an in-run duplicate-name pair would be missed by the preview.
+  const planned = new Map<string, string>();
+  // Same idea for messaging groups, keyed by JID: dry-run never writes, so two
+  // people sharing one JID would otherwise each "insert" it and the second
+  // would be a false duplicate. Keyed by the JID (the real dedup key).
+  const plannedMgByJid = new Map<string, string>();
 
   for (const row of rows) {
     const agentGroup = getAgentGroupByFolder(row.group_folder);
@@ -115,31 +127,36 @@ export function backfillTaskflowPersonDestinations(
       continue;
     }
 
-    let messagingGroupId = findMessagingGroupId('whatsapp', row.notification_group_jid);
+    let messagingGroupId =
+      findMessagingGroupId('whatsapp', row.notification_group_jid) ?? plannedMgByJid.get(row.notification_group_jid);
     if (messagingGroupId) {
       report.messaging_groups_reused++;
     } else {
-      messagingGroupId = `mg-taskflow-person-${normalizeIdPart(row.group_folder)}-${normalizeIdPart(row.person_id)}`;
+      messagingGroupId = personMessagingGroupId(row.notification_group_jid);
       log(`  ${options.dryRun ? 'DRY: ' : ''}messaging_group ${messagingGroupId} → ${row.notification_group_jid}`);
       insertMessagingGroup(messagingGroupId, row.notification_group_jid, row.name, now, options.dryRun);
+      plannedMgByJid.set(row.notification_group_jid, messagingGroupId);
       report.messaging_groups_inserted++;
     }
 
+    const destKey = `${agentGroup.id}\0${row.name}`;
     const existing = getDestinationByName(agentGroup.id, row.name);
-    if (existing) {
+    const priorTarget = existing ? existing.target_id : planned.get(destKey);
+    if (priorTarget !== undefined) {
       report.destinations_skipped++;
       // Collision: the name already maps to a DIFFERENT group → a distinct
       // person with the same display name. The 2nd person's send_message({to})
-      // would mis-route to the 1st. Surface it (the migrate step gates on it);
-      // do NOT overwrite — the operator resolves the duplicate.
-      if (existing.target_id !== messagingGroupId) {
+      // would mis-route to the 1st. Surface it (the migrate step reports it as
+      // degraded); do NOT overwrite — the operator resolves the duplicate.
+      if (priorTarget !== messagingGroupId) {
         report.name_collisions++;
         log(
-          `  COLLISION: ${agentGroup.id} '${row.name}' already → ${existing.target_id}, not ${messagingGroupId} (person_id=${row.person_id})`,
+          `  COLLISION: ${agentGroup.id} '${row.name}' already → ${priorTarget}, not ${messagingGroupId} (person_id=${row.person_id})`,
         );
       }
       continue;
     }
+    planned.set(destKey, messagingGroupId);
     if (options.dryRun) {
       report.destinations_inserted++;
       log(`  DRY: destination ${agentGroup.id} '${row.name}' → ${messagingGroupId}`);

@@ -51,17 +51,26 @@ function main(): void {
   tfDb.close();
 
   console.log(`\n${args.dryRun ? '=== DRY RUN ===' : '=== BACKFILL COMPLETE ==='}`);
-  console.log(`Links processed: ${report.links_processed}`);
   console.log(`Unresolved (skipped): ${report.unresolved}`);
   console.log(`Child 'parent-*' destinations: ${report.child_inserted} new, ${report.child_skipped} already present`);
   console.log(`Parent 'source-*' destinations: ${report.parent_inserted} new, ${report.parent_skipped} already present`);
-  // Fail-loud gate for the cutover migrate step: unresolved links mean some
-  // parent↔child pair won't get its destinations (forwarding stays broken).
+  console.log(`Name collisions (wrong target): ${report.name_collisions}`);
+  // Surface unresolved links + name collisions as `ERROR:` lines but do NOT
+  // exit(1): the migrate-v2.sh run_step promotes the step to "degraded/partial"
+  // on any `^ERROR:` line, so the gap is reported in the summary + handoff.json
+  // without aborting a cutover that has already copied all core + taskflow
+  // state. The host startup self-heal re-runs this backfill idempotently on
+  // every boot, so an unresolved/miswired pair is recoverable (fix wiring,
+  // reboot) — a hard abort here would strand the operator instead.
   if (report.unresolved > 0) {
-    console.error(`ERROR: ${report.unresolved} cross-board link(s) unresolved — forwarding will fail for them.`);
-    closeDb();
-    process.exit(1);
+    console.error(`ERROR: ${report.unresolved} cross-board link(s) unresolved — no matching v2 agent group; approval forwarding stays unwired for them.`);
   }
+  if (report.name_collisions > 0) {
+    console.error(`ERROR: ${report.name_collisions} cross-board name collision(s) — a reserved 'parent-'/'source-' destination already points at a different group; approval forwarding is miswired until resolved.`);
+  }
+  console.log(
+    `OK:links=${report.links_processed},child_new=${report.child_inserted},child_skip=${report.child_skipped},parent_new=${report.parent_inserted},parent_skip=${report.parent_skipped},collisions=${report.name_collisions},unresolved=${report.unresolved}`,
+  );
   closeDb();
 }
 

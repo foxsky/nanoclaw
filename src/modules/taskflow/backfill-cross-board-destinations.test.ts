@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDb, getDb, initTestDb } from '../../db/index.js';
 import { runMigrations } from '../../db/migrations/index.js';
+import { createDestination } from '../../modules/agent-to-agent/db/agent-destinations.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import { backfillCrossBoardDestinations, type BackfillReport } from './backfill-cross-board-destinations.js';
 
@@ -115,6 +116,42 @@ describe('backfillCrossBoardDestinations — A12-part-2 one-shot migration', () 
     expect(second.parent_inserted).toBe(0);
     expect(second.child_skipped).toBe(1);
     expect(second.parent_skipped).toBe(1);
+  });
+
+  it('flags a name collision when a reserved parent-* name already points at a different group', () => {
+    // Why this matters (Codex migration-fidelity review): a stale/partial prior
+    // migration can leave `parent-<folder>` wired to the WRONG messaging group.
+    // Counting it as a benign skip would leave approval forwarding silently
+    // miswired. The backfill must surface it (degraded) and NOT overwrite.
+    const tfDb = initTaskflowDb(tfPath);
+    seedBoard(tfDb, 'board-parent', 'parent-folder', '120363001@g.us', null, 0);
+    seedBoard(tfDb, 'board-child', 'child-folder', '120363002@g.us', 'board-parent', 1);
+    tfDb.close();
+    seedV2Wiring('ag-parent', 'parent-folder', 'mg-parent', '120363001@g.us');
+    seedV2Wiring('ag-child', 'child-folder', 'mg-child', '120363002@g.us');
+    // Pre-existing WRONG wiring: child's 'parent-parent-folder' → some other group.
+    createDestination({
+      agent_group_id: 'ag-child',
+      local_name: 'parent-parent-folder',
+      target_type: 'channel',
+      target_id: 'mg-stale-wrong',
+      created_at: now,
+    });
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillCrossBoardDestinations(ro, { dryRun: false });
+    ro.close();
+
+    expect(report.name_collisions).toBe(1);
+    expect(report.child_skipped).toBe(1);
+    expect(report.child_inserted).toBe(0);
+    // The wrong row is left untouched — operator resolves it.
+    const childDest = getDb()
+      .prepare(`SELECT target_id FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?`)
+      .get('ag-child', 'parent-parent-folder') as { target_id: string };
+    expect(childDest.target_id).toBe('mg-stale-wrong');
+    // The parent direction is fresh, so it still inserts normally.
+    expect(report.parent_inserted).toBe(1);
   });
 
   it('dry-run reports the same insert plan without writing rows', () => {

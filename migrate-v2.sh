@@ -652,6 +652,29 @@ if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
   abort "1f-taskflow"
 fi
 
+# ─── 1g/1h: TaskFlow destination backfills ──────────────────────────────
+# A12-era cross-board approval forwarding (parent-/source- destinations) and
+# per-person send_message (board_people.notification_group_jid → named
+# destination) are NOT carried by the core seed — v1 agents read these from
+# sqlite directly, which v2 blocks. Translate them into agent_destinations
+# now so MIGRATED boards keep both behaviors on first boot.
+#
+# These run AFTER 1f-taskflow (needs the copied boards/board_people) and AFTER
+# 1c-groups/1b-db (needs agent_groups + messaging_groups). Both are idempotent
+# and ALSO re-run by the host startup self-heal, so they only SURFACE issues
+# here (unresolved wiring, name collisions promote the step to "degraded" via
+# run_step's ERROR gate) — they never abort. Guarded on taskflow.db existing
+# (1f-taskflow may SKIP when v1 had no taskflow.db → nothing to backfill).
+if [ -f "data/taskflow/taskflow.db" ]; then
+  run_step "1g-cross-board-dest" \
+    "Backfill cross-board approval destinations" \
+    "scripts/backfill-cross-board-destinations.ts" --taskflow-db "data/taskflow/taskflow.db"
+
+  run_step "1h-person-dest" \
+    "Backfill per-person send destinations" \
+    "scripts/backfill-taskflow-person-destinations.ts" --taskflow-db "data/taskflow/taskflow.db"
+fi
+
 echo
 step_ok "Phase 1 complete"
 echo
