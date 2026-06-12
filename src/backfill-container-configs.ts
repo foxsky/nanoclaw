@@ -31,6 +31,7 @@ interface LegacyContainerJson {
   skills?: string[] | 'all';
   provider?: string;
   assistantName?: string;
+  model?: string;
   maxMessagesPerPrompt?: number;
 }
 
@@ -176,7 +177,7 @@ export function backfillContainerConfigs(): void {
     const row: ContainerConfigRow = {
       agent_group_id: group.id,
       provider,
-      model: null,
+      model: legacy.model ?? null,
       effort: null,
       image_tag: legacy.imageTag ?? null,
       assistant_name: legacy.assistantName ?? null,

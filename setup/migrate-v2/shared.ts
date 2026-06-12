@@ -1,6 +1,8 @@
 /**
  * Shared helpers for the v1 → v2 migration steps.
  */
+import fs from 'fs';
+import path from 'path';
 
 // ── JID parsing ─────────────────────────────────────────────────────────
 
@@ -103,10 +105,7 @@ export function inferIsGroup(channelType: string, platformId: string): number {
  * Key rule: requires_trigger=0 means "respond to everything" regardless
  * of the pattern value. The pattern was for mention highlighting, not gating.
  */
-export function triggerToEngage(input: {
-  trigger_pattern: string | null;
-  requires_trigger: number | null;
-}): {
+export function triggerToEngage(input: { trigger_pattern: string | null; requires_trigger: number | null }): {
   engage_mode: 'pattern' | 'mention' | 'mention-sticky';
   engage_pattern: string | null;
 } {
@@ -123,6 +122,64 @@ export function triggerToEngage(input: {
     return { engage_mode: 'pattern', engage_pattern: pattern };
   }
   return { engage_mode: 'mention', engage_pattern: null };
+}
+
+// ── Persona + model (migration-fidelity F3/F4) ──────────────────────────
+
+/**
+ * Derive the v2 container_configs.assistant_name (persona) from v1's
+ * registered_groups.trigger_pattern. v1 stored the persona as the mention
+ * token, e.g. '@Case' → 'Case'. Strip a single leading '@'; do NOT title-case
+ * (the source is already cased). A non-persona pattern (NULL / blank / '.' /
+ * '.*' / no leading '@') yields null so the container-config fallback
+ * (group.name) stays in effect — and so the respond-to-everything regex
+ * patterns triggerToEngage() special-cases never leak in as a "persona".
+ *
+ * Distinct from src/group-sender.ts getGroupSenderName, which falls back to the
+ * global ASSISTANT_NAME — here `null` is meaningful (no per-group override).
+ * requires_trigger is intentionally NOT consulted: @Case/@Kipp boards run with
+ * requires_trigger=0 yet have a real persona; gating on it would blank exactly
+ * the boards this backfill targets.
+ */
+export function personaFromTrigger(triggerPattern: string | null | undefined): string | null {
+  const p = triggerPattern?.trim();
+  if (!p || p === '.' || p === '.*' || !p.startsWith('@')) return null;
+  const name = p.slice(1).trim();
+  if (name.length === 0) return null;
+  // A persona is a plain mention token. A trigger that is actually a regex
+  // (e.g. '@Case\\b', '@(Case|Kipp)') would yield a garbage 'name' — reject any
+  // regex metacharacter so we leave assistant_name NULL rather than store junk.
+  if (/[\\^$.*+?()[\]{}|]/.test(name)) return null;
+  return name;
+}
+
+/**
+ * Read v1's per-agent model override from
+ * `<v1Path>/data/sessions/<folder>/.claude/settings.json`. v1 set the model via
+ * the settings env block (`env.ANTHROPIC_MODEL`, a literal model id). v2 ignores
+ * settings.json (the SDK is invoked with settingSources:[]) and reads the model
+ * from container_configs.model, so the migration must relocate the value.
+ * Returns the model-id string, or null when there is no override (→ SDK default,
+ * which is v1-faithful for boards that never set one). Defensive: also accepts
+ * an older top-level `model` key. Never throws — returns null on any read/parse
+ * failure.
+ */
+export function readV1AgentModel(v1Path: string, folder: string): string | null {
+  const settingsPath = path.join(v1Path, 'data', 'sessions', folder, '.claude', 'settings.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf8');
+  } catch {
+    return null;
+  }
+  let parsed: { env?: { ANTHROPIC_MODEL?: unknown }; model?: unknown };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return null;
+  }
+  const model = parsed?.env?.ANTHROPIC_MODEL ?? parsed?.model;
+  return typeof model === 'string' && model.trim().length > 0 ? model.trim() : null;
 }
 
 // ── ID generation ───────────────────────────────────────────────────────
@@ -153,9 +210,7 @@ export const CHANNEL_AUTH_REGISTRY: Record<string, ChannelAuthSpec> = {
   },
   telegram: {
     v1EnvKeys: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH'],
-    requiredV2Keys: [
-      { key: 'TELEGRAM_BOT_TOKEN', where: 'BotFather on Telegram → /mybots → Bot → API Token' },
-    ],
+    requiredV2Keys: [{ key: 'TELEGRAM_BOT_TOKEN', where: 'BotFather on Telegram → /mybots → Bot → API Token' }],
     candidatePaths: ['data/sessions/telegram', 'store/telegram-session'],
   },
   whatsapp: {

@@ -251,6 +251,125 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
   });
 });
 
+describe('Guard E: groups.ts carries v1 persona (F4) + model (F3) into container.json', () => {
+  it('writes assistantName from trigger_pattern and model from the session settings.json', () => {
+    const v1 = tmp();
+    // v1 DB with a board whose persona is @Case and a sibling with no persona.
+    fs.mkdirSync(path.join(v1, 'store'), { recursive: true });
+    const d = new Database(path.join(v1, 'store', 'messages.db'));
+    d.exec(
+      `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER, container_config TEXT);`,
+    );
+    d.prepare(`INSERT INTO registered_groups VALUES (?, ?, ?, ?, 0, 0, NULL)`).run(
+      'tg:1',
+      'SECTI - TaskFlow',
+      'secti-taskflow',
+      '@Case',
+    );
+    d.prepare(`INSERT INTO registered_groups VALUES (?, ?, ?, ?, 1, 0, NULL)`).run('tg:2', 'Plain', 'plain', '.');
+    d.close();
+    // v1 groups/ dir (required) + a session settings.json carrying the model.
+    fs.mkdirSync(path.join(v1, 'groups', 'secti-taskflow'), { recursive: true });
+    fs.mkdirSync(path.join(v1, 'groups', 'plain'), { recursive: true });
+    const claudeDir = path.join(v1, 'data', 'sessions', 'secti-taskflow', '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_MODEL: 'claude-sonnet-4-6' } }),
+    );
+
+    const cwd = tmp();
+    const r = runStep('groups.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/OK:.*configs=1/); // only the @Case board gets a container.json
+
+    const secti = JSON.parse(fs.readFileSync(path.join(cwd, 'groups', 'secti-taskflow', 'container.json'), 'utf8'));
+    expect(secti.assistantName).toBe('Case');
+    expect(secti.model).toBe('claude-sonnet-4-6');
+    // The '.' (respond-to-all) board has no persona and no model → no container.json.
+    expect(fs.existsSync(path.join(cwd, 'groups', 'plain', 'container.json'))).toBe(false);
+  });
+
+  it('re-run MERGES persona+model into a pre-existing config-only container.json (no clobber)', () => {
+    const v1 = tmp();
+    fs.mkdirSync(path.join(v1, 'store'), { recursive: true });
+    const d = new Database(path.join(v1, 'store', 'messages.db'));
+    d.exec(
+      `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER, container_config TEXT);`,
+    );
+    d.prepare(`INSERT INTO registered_groups VALUES (?, ?, ?, ?, 0, 0, NULL)`).run(
+      'tg:1',
+      'Case Board',
+      'case',
+      '@Case',
+    );
+    d.close();
+    fs.mkdirSync(path.join(v1, 'groups', 'case'), { recursive: true });
+    const claudeDir = path.join(v1, 'data', 'sessions', 'case', '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_MODEL: 'claude-opus-4-8' } }),
+    );
+
+    // Simulate a prior/partial migration that already wrote a config-only
+    // container.json (mounts) but WITHOUT persona/model.
+    const cwd = tmp();
+    const v2CaseDir = path.join(cwd, 'groups', 'case');
+    fs.mkdirSync(v2CaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(v2CaseDir, 'container.json'),
+      JSON.stringify({ additionalMounts: [{ source: '/x', target: '/y' }] }),
+    );
+
+    const r = runStep('groups.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+
+    const merged = JSON.parse(fs.readFileSync(path.join(v2CaseDir, 'container.json'), 'utf8'));
+    expect(merged.assistantName).toBe('Case'); // added on re-run
+    expect(merged.model).toBe('claude-opus-4-8'); // added on re-run
+    expect(merged.additionalMounts).toEqual([{ source: '/x', target: '/y' }]); // preserved
+  });
+
+  it('re-run does NOT clobber an operator-set assistantName/model', () => {
+    const v1 = tmp();
+    fs.mkdirSync(path.join(v1, 'store'), { recursive: true });
+    const d = new Database(path.join(v1, 'store', 'messages.db'));
+    d.exec(
+      `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER, container_config TEXT);`,
+    );
+    d.prepare(`INSERT INTO registered_groups VALUES (?, ?, ?, ?, 0, 0, NULL)`).run(
+      'tg:1',
+      'Case Board',
+      'case',
+      '@Case',
+    );
+    d.close();
+    fs.mkdirSync(path.join(v1, 'groups', 'case'), { recursive: true });
+    const claudeDir = path.join(v1, 'data', 'sessions', 'case', '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_MODEL: 'claude-opus-4-8' } }),
+    );
+
+    const cwd = tmp();
+    const v2CaseDir = path.join(cwd, 'groups', 'case');
+    fs.mkdirSync(v2CaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(v2CaseDir, 'container.json'),
+      JSON.stringify({ assistantName: 'OperatorName', model: 'operator-model' }),
+    );
+
+    const r = runStep('groups.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+
+    const kept = JSON.parse(fs.readFileSync(path.join(v2CaseDir, 'container.json'), 'utf8'));
+    expect(kept.assistantName).toBe('OperatorName');
+    expect(kept.model).toBe('operator-model');
+  });
+});
+
 describe('Guard D: destinations.ts main() backfills + OK contract', () => {
   it('seeds a per-person destination from board_people.notification_group_jid (OK + exit 0)', () => {
     // db.ts first to materialize the v2 agent_group (folder 'main') + messaging

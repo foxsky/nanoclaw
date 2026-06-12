@@ -192,3 +192,60 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
     expect(mcp.existing).toBeDefined();
   });
 });
+
+// F3 (model) + F4 (assistant_name): the migrate groups.ts step writes these into
+// container.json; the backfill imports them into container_configs. Without F3,
+// model was hardcoded null and a migrated board lost its v1 model override.
+describe('backfillContainerConfigs — model + assistant_name from container.json (F3/F4)', () => {
+  it('imports model AND assistantName from container.json into the row', async () => {
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-case', 'case-board'));
+    fs.writeFileSync(
+      path.join(mkGroupDir('case-board'), 'container.json'),
+      JSON.stringify({ model: 'claude-sonnet-4-6', assistantName: 'Case' }),
+    );
+
+    backfillContainerConfigs();
+
+    const cfg = getContainerConfig('ag-case');
+    expect(cfg!.model).toBe('claude-sonnet-4-6');
+    expect(cfg!.assistant_name).toBe('Case');
+  });
+
+  it('leaves model null when container.json has none (board inherits SDK default)', async () => {
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-default', 'default-board'));
+    fs.writeFileSync(
+      path.join(mkGroupDir('default-board'), 'container.json'),
+      JSON.stringify({ assistantName: 'Tars' }),
+    );
+
+    backfillContainerConfigs();
+
+    const cfg = getContainerConfig('ag-default');
+    expect(cfg!.model).toBeNull();
+    expect(cfg!.assistant_name).toBe('Tars');
+  });
+
+  it('does NOT clobber an operator-set model/assistant_name on an existing row', async () => {
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } =
+      await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-keep', 'keep-board'));
+    fs.writeFileSync(
+      path.join(mkGroupDir('keep-board'), 'container.json'),
+      JSON.stringify({ model: 'claude-sonnet-4-6', assistantName: 'Case' }),
+    );
+    // Row already exists with operator values — backfill must not overwrite it.
+    createContainerConfig({
+      ...makeEmptyContainerConfig('ag-keep'),
+      model: 'claude-opus-4-8',
+      assistant_name: 'Operator',
+    });
+
+    backfillContainerConfigs();
+
+    const cfg = getContainerConfig('ag-keep');
+    expect(cfg!.model).toBe('claude-opus-4-8');
+    expect(cfg!.assistant_name).toBe('Operator');
+  });
+});
