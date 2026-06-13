@@ -13,7 +13,9 @@
  * v1's agent-runner-src/ is NOT copied — v2 uses a completely different
  * Bun-based agent-runner.
  *
- * Idempotent — reuses existing sessions, does not overwrite files.
+ * Idempotent — reuses existing sessions and does not overwrite copied files,
+ * EXCEPT conversation transcripts (the `refresh` copy), which are re-copied when
+ * the v1 source has grown so a re-run can't resume a stale/truncated JSONL.
  *
  * Usage: pnpm exec tsx setup/migrate-v2/sessions.ts <v1-path>
  */
@@ -27,16 +29,20 @@ import { initDb, closeDb } from '../../src/db/connection.js';
 import { getAllAgentGroups } from '../../src/db/agent-groups.js';
 import { getMessagingGroupsByAgentGroup } from '../../src/db/messaging-groups.js';
 import { runMigrations } from '../../src/db/migrations/index.js';
-import {
-  resolveSession,
-  writeSessionRouting,
-  outboundDbPath,
-} from '../../src/session-manager.js';
+import { resolveSession, writeSessionRouting, outboundDbPath } from '../../src/session-manager.js';
 
 const SKIP_NAMES = new Set(['.DS_Store']);
 
-/** Recursively copy, never overwriting existing files. */
-function copyTree(src: string, dst: string): number {
+/**
+ * Recursively copy. By default never overwrites existing files. With `refresh`,
+ * re-copies an append-only transcript (`*.jsonl`) ONLY when the destination is a
+ * byte-for-byte PREFIX of the v1 source — i.e. the source is the same transcript
+ * with more appended turns (the stale/truncated-resume case, Codex HIGH). Any
+ * other relationship means the two diverged: once v2 is live it appends its own
+ * turns, so the source is no longer a prefix even if it happens to be longer.
+ * Overwriting then would drop v2-only turns — so keep the live v2 copy + warn.
+ */
+function copyTree(src: string, dst: string, opts: { refresh?: boolean } = {}): number {
   let written = 0;
   if (!fs.existsSync(src)) return 0;
   fs.mkdirSync(dst, { recursive: true });
@@ -47,12 +53,24 @@ function copyTree(src: string, dst: string): number {
     const d = path.join(dst, entry.name);
 
     if (entry.isDirectory()) {
-      written += copyTree(s, d);
+      written += copyTree(s, d, opts);
       continue;
     }
     // Skip dangling symlinks (e.g. v1's .claude/debug/latest pointer).
     if (entry.isSymbolicLink() && !fs.existsSync(s)) continue;
-    if (fs.existsSync(d)) continue;
+    if (fs.existsSync(d)) {
+      // Non-overwriting by default; refresh applies only to grown transcripts.
+      if (!opts.refresh || !entry.name.endsWith('.jsonl')) continue;
+      const srcBuf = fs.readFileSync(s);
+      const dstBuf = fs.readFileSync(d);
+      const grewFromPrefix = srcBuf.length > dstBuf.length && srcBuf.subarray(0, dstBuf.length).equals(dstBuf);
+      if (!grewFromPrefix) {
+        if (!srcBuf.equals(dstBuf)) {
+          console.warn(`WARN:transcript ${d} diverged from its v1 source — keeping the live v2 copy, not overwriting.`);
+        }
+        continue;
+      }
+    }
     fs.copyFileSync(s, d);
     written += 1;
   }
@@ -100,9 +118,7 @@ function main(): void {
   if (fs.existsSync(v1MsgDbPath)) {
     const v1Db = new Database(v1MsgDbPath, { readonly: true, fileMustExist: true });
     try {
-      const hasSessions = v1Db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
-        .get();
+      const hasSessions = v1Db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get();
       if (hasSessions) {
         for (const r of v1Db.prepare('SELECT group_folder, session_id FROM sessions').all() as Array<{
           group_folder: string;
@@ -156,74 +172,81 @@ function main(): void {
     // This is per-agent-group, shared across all sessions for that group
     const v1ClaudeDir = path.join(v1SessionsDir, folder, '.claude');
     if (fs.existsSync(v1ClaudeDir)) {
-      const v2ClaudeDir = path.join(DATA_DIR, 'v2-sessions', ag.id, '.claude-shared');
-      filesCopied += copyTree(v1ClaudeDir, v2ClaudeDir);
+      try {
+        const v2ClaudeDir = path.join(DATA_DIR, 'v2-sessions', ag.id, '.claude-shared');
+        filesCopied += copyTree(v1ClaudeDir, v2ClaudeDir);
 
-      // v1 containers worked in /workspace/group, v2 works in /workspace/agent.
-      // Claude Code stores sessions under projects/<hashed-cwd>/. Copy the v1
-      // project dir to the v2 path so Claude Code finds the conversation history.
-      const projectsDir = path.join(v2ClaudeDir, 'projects');
-      const v1ProjectDir = path.join(projectsDir, '-workspace-group');
-      const v2ProjectDir = path.join(projectsDir, '-workspace-agent');
-      // Always copy when the v1 project dir exists — copyTree is non-overwriting,
-      // so on a re-run it picks up JSONLs for sessions v1 started since the last
-      // run (including a newly-active one), instead of leaving them stranded in
-      // -workspace-group where the continuation lookup below can't see them.
-      if (fs.existsSync(v1ProjectDir)) {
-        filesCopied += copyTree(v1ProjectDir, v2ProjectDir);
-      }
+        // v1 containers worked in /workspace/group, v2 works in /workspace/agent.
+        // Claude Code stores sessions under projects/<hashed-cwd>/. Copy v1's
+        // project dir to the v2 agent path so Claude Code finds the conversation
+        // history. Source it from v1's REAL project dir — NOT the .claude-shared
+        // copy the bulk copyTree above made, which is non-overwriting and goes
+        // stale when v1 appends to the active JSONL between runs. `refresh`
+        // re-copies grown transcripts so a re-run resumes the full conversation,
+        // and a brand-new active session's JSONL is picked up too (not stranded).
+        const projectsDir = path.join(v2ClaudeDir, 'projects');
+        const v1SourceProjectDir = path.join(v1ClaudeDir, 'projects', '-workspace-group');
+        const v2ProjectDir = path.join(projectsDir, '-workspace-agent');
+        if (fs.existsSync(v1SourceProjectDir)) {
+          filesCopied += copyTree(v1SourceProjectDir, v2ProjectDir, { refresh: true });
+        }
 
-      // Write the v1 Claude Code session ID as the continuation in outbound.db
-      // so the agent-runner resumes the exact same conversation.
-      // The session ID is the JSONL filename (without extension) under the
-      // project dir.
-      const sourceDir = fs.existsSync(v2ProjectDir) ? v2ProjectDir : v1ProjectDir;
-      const jsonlFiles = fs.existsSync(sourceDir)
-        ? fs.readdirSync(sourceDir).filter((f) => f.endsWith('.jsonl'))
-        : [];
-      // Authoritative: the v1 sessions table says which session is active. Use
-      // it when its JSONL was actually copied. Otherwise fall back to the mtime
-      // sort (unreliable — copyTree clobbers mtimes — but the only option for v1
-      // installs without a sessions row). Fail loud whenever the table named an
-      // active session we can't actually resume.
-      const authoritative = v1ActiveSession.get(folder);
-      let v1SessionId: string | undefined;
-      if (authoritative && jsonlFiles.includes(`${authoritative}.jsonl`)) {
-        v1SessionId = authoritative;
-      } else if (jsonlFiles.length > 0) {
-        if (authoritative) {
+        // Write the v1 Claude Code session ID as the continuation in outbound.db
+        // so the agent-runner resumes the exact same conversation.
+        // The session ID is the JSONL filename (without extension) under the
+        // project dir.
+        const sourceDir = fs.existsSync(v2ProjectDir) ? v2ProjectDir : v1SourceProjectDir;
+        const jsonlFiles = fs.existsSync(sourceDir)
+          ? fs.readdirSync(sourceDir).filter((f) => f.endsWith('.jsonl'))
+          : [];
+        // Authoritative: the v1 sessions table says which session is active. Use
+        // it when its JSONL was actually copied. Otherwise fall back to the mtime
+        // sort (unreliable — copyTree clobbers mtimes — but the only option for v1
+        // installs without a sessions row). Fail loud whenever the table named an
+        // active session we can't actually resume.
+        const authoritative = v1ActiveSession.get(folder);
+        let v1SessionId: string | undefined;
+        if (authoritative && jsonlFiles.includes(`${authoritative}.jsonl`)) {
+          v1SessionId = authoritative;
+        } else if (jsonlFiles.length > 0) {
+          if (authoritative) {
+            console.error(
+              `ERROR:session ${folder}: v1 active session ${authoritative} has no copied JSONL — resuming best-effort by mtime`,
+            );
+          }
+          v1SessionId = jsonlFiles
+            .map((f) => ({
+              name: f.replace('.jsonl', ''),
+              mtime: fs.statSync(path.join(sourceDir, f)).mtimeMs,
+            }))
+            .sort((a, b) => b.mtime - a.mtime)[0].name;
+        } else if (authoritative) {
+          // The table named an active session but NO JSONL history was copied —
+          // nothing to resume; surface it rather than start silently fresh.
           console.error(
-            `ERROR:session ${folder}: v1 active session ${authoritative} has no copied JSONL — resuming best-effort by mtime`,
+            `ERROR:session ${folder}: v1 active session ${authoritative} but no JSONL history copied — continuation not set`,
           );
         }
-        v1SessionId = jsonlFiles
-          .map((f) => ({
-            name: f.replace('.jsonl', ''),
-            mtime: fs.statSync(path.join(sourceDir, f)).mtimeMs,
-          }))
-          .sort((a, b) => b.mtime - a.mtime)[0].name;
-      } else if (authoritative) {
-        // The table named an active session but NO JSONL history was copied —
-        // nothing to resume; surface it rather than start silently fresh.
-        console.error(
-          `ERROR:session ${folder}: v1 active session ${authoritative} but no JSONL history copied — continuation not set`,
-        );
-      }
 
-      if (v1SessionId) {
-        // Write into each v2 session's outbound.db for this agent group
-        const sessions = getMessagingGroupsByAgentGroup(ag.id);
-        for (const mg of sessions) {
-          const { session } = resolveSession(ag.id, mg.id, null, 'shared');
-          const obPath = outboundDbPath(ag.id, session.id);
-          if (fs.existsSync(obPath)) {
-            const ob = new Database(obPath);
-            ob.prepare(
-              "INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
-            ).run(v1SessionId, new Date().toISOString());
-            ob.close();
+        if (v1SessionId) {
+          // Write into each v2 session's outbound.db for this agent group
+          const sessions = getMessagingGroupsByAgentGroup(ag.id);
+          for (const mg of sessions) {
+            const { session } = resolveSession(ag.id, mg.id, null, 'shared');
+            const obPath = outboundDbPath(ag.id, session.id);
+            if (fs.existsSync(obPath)) {
+              const ob = new Database(obPath);
+              ob.prepare(
+                "INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
+              ).run(v1SessionId, new Date().toISOString());
+              ob.close();
+            }
           }
         }
+      } catch (err) {
+        // An unreadable/locked session dir must degrade THIS folder only —
+        // not hard-fail the whole step and strand every other session.
+        console.error(`ERROR:session ${folder}: failed to copy v1 .claude state — ${(err as Error).message}`);
       }
     }
   }

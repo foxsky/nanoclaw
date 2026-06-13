@@ -591,6 +591,136 @@ describe('Guard G: sessions.ts continuation = authoritative v1 sessions table (G
     expect(cont?.value).toBe('session-two');
   });
 
+  it('a re-run REFRESHES an appended active JSONL — no stale/truncated transcript (HIGH)', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'session-one');
+      `);
+    });
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    const jsonl = path.join(projDir, 'session-one.jsonl');
+    fs.writeFileSync(jsonl, '{"type":"summary","n":1}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    // v1 stays live and APPENDS to the same active JSONL between migration runs
+    // (the step copies sessions before the 1f gate stops v1). The first copy is
+    // now stale/truncated — a re-run must refresh it or the resumed conversation
+    // silently loses turns. (Old code: copyTree skipped the existing file.)
+    fs.appendFileSync(jsonl, '{"type":"user","n":2}\n{"type":"assistant","n":3}\n');
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const copied = path.join(
+      cwd,
+      'data',
+      'v2-sessions',
+      ag.id,
+      '.claude-shared',
+      'projects',
+      '-workspace-agent',
+      'session-one.jsonl',
+    );
+    expect(fs.readFileSync(copied, 'utf8')).toBe(fs.readFileSync(jsonl, 'utf8'));
+  });
+
+  it('a re-run does NOT clobber a LONGER (v2-appended) transcript with the older v1 source (HIGH)', () => {
+    // Inverse of the refresh case. Once v2 is live it appends to its OWN
+    // -workspace-agent JSONL, so the dest grows PAST the frozen v1 source. A
+    // recovery re-run must keep v2's longer transcript — a size-only "differs"
+    // refresh would silently overwrite it with v1's stale copy and drop the
+    // post-cutover conversation.
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'session-one');
+      `);
+    });
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'session-one.jsonl'), '{"type":"summary","n":1}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const copied = path.join(
+      cwd,
+      'data',
+      'v2-sessions',
+      ag.id,
+      '.claude-shared',
+      'projects',
+      '-workspace-agent',
+      'session-one.jsonl',
+    );
+
+    // v2 goes live and grows its own transcript past the v1 source.
+    const v2Grown = '{"type":"summary","n":1}\n{"type":"user","n":2}\n{"type":"assistant","n":3}\n';
+    fs.writeFileSync(copied, v2Grown);
+
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+    expect(fs.readFileSync(copied, 'utf8')).toBe(v2Grown); // preserved, not clobbered
+  });
+
+  it('a re-run does NOT clobber a DIVERGENT v2 transcript even when the v1 source is LONGER (prefix-only refresh)', () => {
+    // Split-brain: both sides appended different turns after the first copy and
+    // v1 ends up longer. A size-only (src>dst) refresh would overwrite v2's
+    // divergent turns. Refresh must require dst to be a byte-PREFIX of src
+    // (append-only continuation), not merely shorter.
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'session-one');
+      `);
+    });
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    const jsonl = path.join(projDir, 'session-one.jsonl');
+    fs.writeFileSync(jsonl, '{"type":"summary","n":1}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const copied = path.join(
+      cwd,
+      'data',
+      'v2-sessions',
+      ag.id,
+      '.claude-shared',
+      'projects',
+      '-workspace-agent',
+      'session-one.jsonl',
+    );
+
+    // v2 appends its OWN (divergent) turn; v1 then grows LONGER with different turns.
+    const v2Divergent = '{"type":"summary","n":1}\n{"type":"v2-only","n":9}\n';
+    fs.writeFileSync(copied, v2Divergent);
+    fs.appendFileSync(jsonl, '{"type":"v1-a"}\n{"type":"v1-b"}\n{"type":"v1-c"}\n'); // src now longer, but NOT a prefix of dst
+
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+    expect(fs.readFileSync(copied, 'utf8')).toBe(v2Divergent); // kept — dst is not a prefix of src
+  });
+
   it('emits a degraded ERROR and sets NO continuation when the active session has no copied history', () => {
     const v1 = v1WithMessagesDb((d) => {
       d.exec(`
@@ -630,11 +760,55 @@ describe('Guard F: tasks.ts migrates paused tasks as paused (F7)', () => {
         INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
       `);
       const ins = d.prepare(`INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-      ins.run('act-1', 'main', 'tg:123', 'active daily', 'cron', '0 8 * * *', '2026-06-12T11:00:00.000Z', 'active', 'recent', null);
-      ins.run('pause-1', 'main', 'tg:123', 'paused daily', 'cron', '0 9 * * *', '2026-06-12T12:00:00.000Z', 'paused', 'recent', null);
+      ins.run(
+        'act-1',
+        'main',
+        'tg:123',
+        'active daily',
+        'cron',
+        '0 8 * * *',
+        '2026-06-12T11:00:00.000Z',
+        'active',
+        'recent',
+        null,
+      );
+      ins.run(
+        'pause-1',
+        'main',
+        'tg:123',
+        'paused daily',
+        'cron',
+        '0 9 * * *',
+        '2026-06-12T12:00:00.000Z',
+        'paused',
+        'recent',
+        null,
+      );
       // Terminal states must NOT migrate.
-      ins.run('done-1', 'main', 'tg:123', 'done once', 'once', '', '2026-01-01T00:00:00.000Z', 'completed', 'recent', null);
-      ins.run('cancel-1', 'main', 'tg:123', 'cancelled', 'cron', '0 10 * * *', '2026-06-12T13:00:00.000Z', 'cancelled', 'recent', null);
+      ins.run(
+        'done-1',
+        'main',
+        'tg:123',
+        'done once',
+        'once',
+        '',
+        '2026-01-01T00:00:00.000Z',
+        'completed',
+        'recent',
+        null,
+      );
+      ins.run(
+        'cancel-1',
+        'main',
+        'tg:123',
+        'cancelled',
+        'cron',
+        '0 10 * * *',
+        '2026-06-12T13:00:00.000Z',
+        'cancelled',
+        'recent',
+        null,
+      );
     });
     const cwd = tmp();
     expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
@@ -655,9 +829,11 @@ describe('Guard F: tasks.ts migrates paused tasks as paused (F7)', () => {
     expect(inbound).toBeDefined();
     const db = new Database(inbound!);
     const statusOf = (id: string) =>
-      (db.prepare("SELECT status FROM messages_in WHERE id = ? AND kind = 'task'").get(id) as
-        | { status: string }
-        | undefined)?.status;
+      (
+        db.prepare("SELECT status FROM messages_in WHERE id = ? AND kind = 'task'").get(id) as
+          | { status: string }
+          | undefined
+      )?.status;
     const active = statusOf('act-1');
     const paused = statusOf('pause-1');
     const done = statusOf('done-1');
