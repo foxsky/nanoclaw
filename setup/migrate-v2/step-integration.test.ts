@@ -486,6 +486,141 @@ describe('Guard C: tasks.ts legacy prompt shapes', () => {
   });
 });
 
+describe('Guard G: sessions.ts continuation = authoritative v1 sessions table (Gap #1)', () => {
+  function findOutbound(cwd: string, agId: string): string {
+    const root = path.join(cwd, 'data', 'v2-sessions', agId);
+    const ob = fs
+      .readdirSync(root, { recursive: true })
+      .map((p) => path.join(root, String(p)))
+      .find((p) => p.endsWith('outbound.db'));
+    if (!ob) throw new Error('no outbound.db found');
+    return ob;
+  }
+
+  it('resumes the session_id from the v1 sessions table, NOT the (mtime-clobbered) JSONL sort', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'active-session-id');
+      `);
+    });
+    // Two JSONL files; copyTree clobbers mtimes on copy, so the old mtime sort
+    // could pick either. The sessions table is authoritative.
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'active-session-id.jsonl'), '{"type":"summary"}\n');
+    fs.writeFileSync(path.join(projDir, 'stale-old-session.jsonl'), '{"type":"summary"}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const ob = new Database(findOutbound(cwd, ag.id));
+    const cont = ob.prepare(`SELECT value FROM session_state WHERE key = 'continuation:claude'`).get() as
+      | { value: string }
+      | undefined;
+    ob.close();
+    expect(cont?.value).toBe('active-session-id');
+  });
+
+  it('falls back to a JSONL when the v1 sessions table has no row for the folder', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+      `); // no sessions row for 'main'
+    });
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'only-session.jsonl'), '{"type":"summary"}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const ob = new Database(findOutbound(cwd, ag.id));
+    const cont = ob.prepare(`SELECT value FROM session_state WHERE key = 'continuation:claude'`).get() as
+      | { value: string }
+      | undefined;
+    ob.close();
+    expect(cont?.value).toBe('only-session'); // fallback to the present JSONL
+  });
+
+  it('a re-run picks up a newly-active session (copyTree always runs, table re-read)', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'session-one');
+      `);
+    });
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'session-one.jsonl'), '{"type":"summary"}\n');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    // v1 advances: a new active session + the table updates. (Old code skipped
+    // copyTree on re-run because -workspace-agent already existed → stranded.)
+    fs.writeFileSync(path.join(projDir, 'session-two.jsonl'), '{"type":"summary"}\n');
+    const v1db = new Database(path.join(v1, 'store', 'messages.db'));
+    v1db.prepare(`UPDATE sessions SET session_id = 'session-two' WHERE group_folder = 'main'`).run();
+    v1db.close();
+    expect(runStep('sessions.ts', [v1], { cwd }).status).toBe(0);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const ob = new Database(findOutbound(cwd, ag.id));
+    const cont = ob.prepare(`SELECT value FROM session_state WHERE key = 'continuation:claude'`).get() as
+      | { value: string }
+      | undefined;
+    ob.close();
+    expect(cont?.value).toBe('session-two');
+  });
+
+  it('emits a degraded ERROR and sets NO continuation when the active session has no copied history', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE sessions (group_folder TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+        INSERT INTO sessions VALUES ('main', 'ghost-session');
+      `);
+    });
+    // .claude project dir exists but holds NO jsonl history.
+    const projDir = path.join(v1, 'data', 'sessions', 'main', '.claude', 'projects', '-workspace-group');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'notes.txt'), 'not a jsonl');
+
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+    const r = runStep('sessions.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+    expect(`${r.stdout}${r.stderr}`).toMatch(/ERROR:session main: v1 active session ghost-session/);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const ob = new Database(findOutbound(cwd, ag.id));
+    const cont = ob.prepare(`SELECT value FROM session_state WHERE key = 'continuation:claude'`).get();
+    ob.close();
+    expect(cont).toBeUndefined();
+  });
+});
+
 describe('Guard F: tasks.ts migrates paused tasks as paused (F7)', () => {
   it('carries a paused cron task DORMANT (status=paused), migrates active, drops terminal states', () => {
     const v1 = v1WithMessagesDb((d) => {

@@ -89,6 +89,33 @@ function main(): void {
     folderToAg.set(ag.folder, ag);
   }
 
+  // Authoritative v1 active session per folder, from v1's `sessions` table
+  // (group_folder PRIMARY KEY → session_id). This is the source of truth for
+  // which conversation to resume. The JSONL-mtime sort below is unreliable —
+  // copyTree (fs.copyFileSync) clobbers mtimes on copy, so a group with many
+  // JSONL files would otherwise resume an arbitrary old conversation. Falls
+  // back to the mtime sort only when the table has no row (older v1).
+  const v1ActiveSession = new Map<string, string>();
+  const v1MsgDbPath = path.join(v1Path, 'store', 'messages.db');
+  if (fs.existsSync(v1MsgDbPath)) {
+    const v1Db = new Database(v1MsgDbPath, { readonly: true, fileMustExist: true });
+    try {
+      const hasSessions = v1Db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+        .get();
+      if (hasSessions) {
+        for (const r of v1Db.prepare('SELECT group_folder, session_id FROM sessions').all() as Array<{
+          group_folder: string;
+          session_id: string;
+        }>) {
+          if (r.group_folder && r.session_id) v1ActiveSession.set(r.group_folder, r.session_id);
+        }
+      }
+    } finally {
+      v1Db.close();
+    }
+  }
+
   let sessionsCreated = 0;
   let sessionsReused = 0;
   let sessionsSkipped = 0;
@@ -138,7 +165,11 @@ function main(): void {
       const projectsDir = path.join(v2ClaudeDir, 'projects');
       const v1ProjectDir = path.join(projectsDir, '-workspace-group');
       const v2ProjectDir = path.join(projectsDir, '-workspace-agent');
-      if (fs.existsSync(v1ProjectDir) && !fs.existsSync(v2ProjectDir)) {
+      // Always copy when the v1 project dir exists — copyTree is non-overwriting,
+      // so on a re-run it picks up JSONLs for sessions v1 started since the last
+      // run (including a newly-active one), instead of leaving them stranded in
+      // -workspace-group where the continuation lookup below can't see them.
+      if (fs.existsSync(v1ProjectDir)) {
         filesCopied += copyTree(v1ProjectDir, v2ProjectDir);
       }
 
@@ -147,29 +178,50 @@ function main(): void {
       // The session ID is the JSONL filename (without extension) under the
       // project dir.
       const sourceDir = fs.existsSync(v2ProjectDir) ? v2ProjectDir : v1ProjectDir;
-      if (fs.existsSync(sourceDir)) {
-        const jsonlFiles = fs.readdirSync(sourceDir).filter((f) => f.endsWith('.jsonl'));
-        if (jsonlFiles.length > 0) {
-          // Use the most recent JSONL file (by mtime from v1)
-          const v1SessionId = jsonlFiles
-            .map((f) => ({
-              name: f.replace('.jsonl', ''),
-              mtime: fs.statSync(path.join(sourceDir, f)).mtimeMs,
-            }))
-            .sort((a, b) => b.mtime - a.mtime)[0].name;
+      const jsonlFiles = fs.existsSync(sourceDir)
+        ? fs.readdirSync(sourceDir).filter((f) => f.endsWith('.jsonl'))
+        : [];
+      // Authoritative: the v1 sessions table says which session is active. Use
+      // it when its JSONL was actually copied. Otherwise fall back to the mtime
+      // sort (unreliable — copyTree clobbers mtimes — but the only option for v1
+      // installs without a sessions row). Fail loud whenever the table named an
+      // active session we can't actually resume.
+      const authoritative = v1ActiveSession.get(folder);
+      let v1SessionId: string | undefined;
+      if (authoritative && jsonlFiles.includes(`${authoritative}.jsonl`)) {
+        v1SessionId = authoritative;
+      } else if (jsonlFiles.length > 0) {
+        if (authoritative) {
+          console.error(
+            `ERROR:session ${folder}: v1 active session ${authoritative} has no copied JSONL — resuming best-effort by mtime`,
+          );
+        }
+        v1SessionId = jsonlFiles
+          .map((f) => ({
+            name: f.replace('.jsonl', ''),
+            mtime: fs.statSync(path.join(sourceDir, f)).mtimeMs,
+          }))
+          .sort((a, b) => b.mtime - a.mtime)[0].name;
+      } else if (authoritative) {
+        // The table named an active session but NO JSONL history was copied —
+        // nothing to resume; surface it rather than start silently fresh.
+        console.error(
+          `ERROR:session ${folder}: v1 active session ${authoritative} but no JSONL history copied — continuation not set`,
+        );
+      }
 
-          // Write into each v2 session's outbound.db for this agent group
-          const sessions = getMessagingGroupsByAgentGroup(ag.id);
-          for (const mg of sessions) {
-            const { session } = resolveSession(ag.id, mg.id, null, 'shared');
-            const obPath = outboundDbPath(ag.id, session.id);
-            if (fs.existsSync(obPath)) {
-              const ob = new Database(obPath);
-              ob.prepare(
-                "INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
-              ).run(v1SessionId, new Date().toISOString());
-              ob.close();
-            }
+      if (v1SessionId) {
+        // Write into each v2 session's outbound.db for this agent group
+        const sessions = getMessagingGroupsByAgentGroup(ag.id);
+        for (const mg of sessions) {
+          const { session } = resolveSession(ag.id, mg.id, null, 'shared');
+          const obPath = outboundDbPath(ag.id, session.id);
+          if (fs.existsSync(obPath)) {
+            const ob = new Database(obPath);
+            ob.prepare(
+              "INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
+            ).run(v1SessionId, new Date().toISOString());
+            ob.close();
           }
         }
       }
