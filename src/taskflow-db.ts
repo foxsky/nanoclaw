@@ -814,7 +814,13 @@ export function resolveBoardTimezone(groupFolder: string): string | undefined {
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
-    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
+    // ORDER BY id for determinism: boards.group_folder has no UNIQUE constraint,
+    // so if two boards ever share a folder (RC1 — a new board provisioned with a
+    // group_folder override colliding with a migrated board's drifted value),
+    // routing must still resolve to a STABLE board across restarts/VACUUM, not an
+    // undefined SQLite row order. provision dedups against board folders to keep
+    // this empty, but the read stays deterministic regardless.
+    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? ORDER BY id LIMIT 1`).get(groupFolder) as
       | { id: string }
       | undefined;
     const boardId =
@@ -851,7 +857,13 @@ export function resolveTaskflowBoardId(
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
 
-    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
+    // ORDER BY id for determinism: boards.group_folder has no UNIQUE constraint,
+    // so if two boards ever share a folder (RC1 — a new board provisioned with a
+    // group_folder override colliding with a migrated board's drifted value),
+    // routing must still resolve to a STABLE board across restarts/VACUUM, not an
+    // undefined SQLite row order. provision dedups against board folders to keep
+    // this empty, but the read stays deterministic regardless.
+    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? ORDER BY id LIMIT 1`).get(groupFolder) as
       | { id: string }
       | undefined;
     if (direct?.id) {
@@ -872,4 +884,39 @@ export function resolveTaskflowBoardId(
   } finally {
     db?.close();
   }
+}
+
+/**
+ * All folder names already reserved by a TaskFlow board: `boards.group_folder`
+ * (incl. the migrated boards whose folder drifted away from their board id) plus
+ * the `board_groups` mapping. The provision flow unions these with
+ * `agent_groups.folder` when picking a unique folder for a NEW board (RC1), so a
+ * new board can't be created with a `group_folder` that collides with a migrated
+ * board's drifted value — a collision would otherwise make `resolveTaskflowBoardId`
+ * resolve a migrated board's wake to the wrong board. Fail-soft: returns an empty
+ * set if taskflow.db is unavailable (degrades to the prior agent_groups-only
+ * dedup; never throws into provisioning).
+ */
+export function getReservedBoardFolders(dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db')): Set<string> {
+  const out = new Set<string>();
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+    for (const r of db
+      .prepare(`SELECT group_folder FROM boards WHERE group_folder IS NOT NULL AND group_folder != ''`)
+      .all() as Array<{ group_folder: string }>) {
+      out.add(r.group_folder);
+    }
+    for (const r of db
+      .prepare(`SELECT group_folder FROM board_groups WHERE group_folder IS NOT NULL AND group_folder != ''`)
+      .all() as Array<{ group_folder: string }>) {
+      out.add(r.group_folder);
+    }
+  } catch {
+    /* taskflow.db missing/unopenable (or no board_groups table yet) → degrade to agent_groups-only dedup */
+  } finally {
+    db?.close();
+  }
+  return out;
 }

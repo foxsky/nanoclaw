@@ -908,3 +908,38 @@ describe('initTaskflowDb', () => {
     db2.close();
   });
 });
+
+describe('getReservedBoardFolders (RC1 — provision folder-collision dedup)', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns boards.group_folder (incl. migrated-drifted) ∪ board_groups.group_folder', async () => {
+    const { getReservedBoardFolders } = await import('./taskflow-db.js');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_folder TEXT NOT NULL);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, PRIMARY KEY (board_id, group_jid));
+      -- a migrated board whose folder drifted away from its board id:
+      INSERT INTO boards (id, group_folder) VALUES ('board-geo-secti-taskflow', 'anali-geo-taskflow');
+      INSERT INTO boards (id, group_folder) VALUES ('board-eng-taskflow', 'eng-taskflow');
+      INSERT INTO board_groups (board_id, group_jid, group_folder) VALUES ('board-eng-taskflow', '1@g.us', 'eng-mapped');
+    `);
+    db.close();
+
+    const reserved = getReservedBoardFolders(dbPath);
+    // The drifted folder is reserved even though it never appears in agent_groups.folder.
+    expect(reserved.has('anali-geo-taskflow')).toBe(true);
+    expect(reserved.has('eng-taskflow')).toBe(true);
+    expect(reserved.has('eng-mapped')).toBe(true);
+  });
+
+  it('fail-soft: returns an empty set when the db is missing (degrades to agent_groups-only dedup)', async () => {
+    const { getReservedBoardFolders } = await import('./taskflow-db.js');
+    expect(getReservedBoardFolders('/nonexistent/taskflow.db').size).toBe(0);
+  });
+});

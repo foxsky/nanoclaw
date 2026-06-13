@@ -6,6 +6,7 @@ import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { wakeContainer } from '../../container-runner.js';
 import { getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
+import { getReservedBoardFolders } from '../../taskflow-db.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { createDestinationIfAbsent } from '../agent-to-agent/db/agent-destinations.js';
 import { writeDestinations } from '../agent-to-agent/write-destinations.js';
@@ -242,7 +243,12 @@ function computeChildFolderAndName(parsed: ParsedInput): { folder: string; name:
       fallbackFolder: baseFolder,
     });
   }
-  const folder = pickUniqueAgentFolder(baseFolder, new Set(getAllAgentGroups().map((ag) => ag.folder)));
+  // RC1: dedup against board folders too (migrated boards' drifted
+  // group_folder isn't in agent_groups.folder), so a new child can't collide.
+  const folder = pickUniqueAgentFolder(
+    baseFolder,
+    new Set([...getAllAgentGroups().map((ag) => ag.folder), ...getReservedBoardFolders(TASKFLOW_DB_PATH)]),
+  );
   if (!folder) {
     log.warn('provision_child_board: invalid group folder name', { baseFolder });
     return null;
@@ -395,7 +401,20 @@ export async function handleProvisionChildBoard(
   let childInboundDb: DatabaseType.Database | null = null;
   try {
     const parent = loadParent(tfDb, session);
-    if (!parent) return;
+    if (!parent) {
+      // RC3 fail-loud: register_person already committed the person, so an
+      // unresolvable parent leaves a registered person with NO board. This was a
+      // silent `return` (the EX-014/Sanunciel partial state). Log loud so it's
+      // diagnosable; a chat alert isn't possible here because the parent — the
+      // alert's own destination (sourceMessagingGroupPlatformId) — is exactly
+      // what failed to resolve.
+      log.error('provision_child_board: parent board unresolvable — person registered but board NOT provisioned', {
+        sessionId: session.id,
+        personId: parsed.personId,
+        personName: parsed.personName,
+      });
+      return;
+    }
     const alertFailed = (reason: string) =>
       alertProvisionFailed(adapter, parent.sourceMessagingGroupPlatformId, parsed.personName, reason);
 
