@@ -55,6 +55,22 @@ CREATE TABLE IF NOT EXISTS child_board_registrations (
   PRIMARY KEY (parent_board_id, person_id)
 );
 
+-- RC4: a pure concurrency lock for child-board provisioning. The PK makes a
+-- truly-concurrent cross-session provision of the same (parent, person) fail at
+-- INSERT — BEFORE the irreversible WhatsApp createGroup side-effect — instead of
+-- after both have minted an orphan group. Deliberately FK-free (the child board
+-- does not exist at claim time) and read by NOTHING except the provisioner, so
+-- child_board_registrations keeps its "a row ⇒ a fully-seeded child board"
+-- invariant for every other consumer. The claim is deleted on success and on
+-- every failure path; a row orphaned by a hard crash in the (claim → seed)
+-- window is a narrow operational cleanup item (claimed_at aids diagnosis).
+CREATE TABLE IF NOT EXISTS child_board_provision_claims (
+  parent_board_id TEXT NOT NULL,
+  person_id TEXT NOT NULL,
+  claimed_at TEXT NOT NULL,
+  PRIMARY KEY (parent_board_id, person_id)
+);
+
 CREATE TABLE IF NOT EXISTS board_groups (
   board_id TEXT REFERENCES boards(id),
   group_jid TEXT NOT NULL,

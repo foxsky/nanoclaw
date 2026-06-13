@@ -77,6 +77,18 @@ interface ParentLookup {
   sourceMessagingGroupPlatformId: string | null;
 }
 
+/**
+ * True ONLY for a better-sqlite3 PRIMARY KEY / UNIQUE violation (the RC4
+ * pre-claim race-loser). Deliberately NOT `startsWith('SQLITE_CONSTRAINT')` —
+ * that would also swallow FOREIGN KEY / NOT NULL / CHECK failures (e.g. a
+ * concurrent parent-board delete raising SQLITE_CONSTRAINT_FOREIGNKEY) as a
+ * spurious "already claimed".
+ */
+function isPrimaryKeyConflict(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code;
+  return code === 'SQLITE_CONSTRAINT_PRIMARYKEY' || code === 'SQLITE_CONSTRAINT_UNIQUE';
+}
+
 function loadParent(tfDb: DatabaseType.Database, session: Session): ParentLookup | null {
   const callerAgent = getAgentGroup(session.agent_group_id);
   if (!callerAgent) {
@@ -493,6 +505,53 @@ export async function handleProvisionChildBoard(
     const { folder, name: childGroupName } = folderAndName;
     const childBoardId = `board-${folder}`;
 
+    // RC4: pre-claim the (parent, person) lock BEFORE the WhatsApp createGroup
+    // side-effect. The PK on child_board_provision_claims makes a truly-concurrent
+    // cross-session provision of the same person fail HERE (caught just below)
+    // instead of after both have already minted a WhatsApp group — closing the
+    // orphan-group residual. This is a dedicated lock table (read by nothing
+    // else), so child_board_registrations keeps its "a row ⇒ a seeded board"
+    // invariant for every other consumer. We release the lock on success and on
+    // every failure path.
+    try {
+      tfDb
+        .prepare('INSERT INTO child_board_provision_claims (parent_board_id, person_id, claimed_at) VALUES (?, ?, ?)')
+        .run(parent.parentBoard.id, parsed.personId, new Date().toISOString());
+    } catch (err) {
+      if (isPrimaryKeyConflict(err)) {
+        // A concurrent provision already holds the lock for this person.
+        // Skip the group side-effect; the winning provision sends the confirmation.
+        log.warn('provision_child_board: (parent, person) already claimed by a concurrent provision — skipping', {
+          parentBoardId: parent.parentBoard.id,
+          personId: parsed.personId,
+        });
+        return;
+      }
+      throw err;
+    }
+    const releaseClaim = () =>
+      tfDb
+        .prepare('DELETE FROM child_board_provision_claims WHERE parent_board_id = ? AND person_id = ?')
+        .run(parent.parentBoard.id, parsed.personId);
+
+    // RC4 double-checked locking: a slow contender could have passed the
+    // alreadyOnThisParent SELECT above BEFORE a prior provision seeded, then
+    // acquired this lock only AFTER that provision committed its registration and
+    // released — and would otherwise mint a second orphan group. Re-check under
+    // the lock: if the registration (create- OR cross-parent-link path) now
+    // exists, the work is already done.
+    const nowRegistered = tfDb
+      .prepare('SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?')
+      .get(parent.parentBoard.id, parsed.personId);
+    if (nowRegistered) {
+      log.warn('provision_child_board: registration appeared after acquiring the lock — skipping', {
+        parentBoardId: parent.parentBoard.id,
+        personId: parsed.personId,
+      });
+      releaseClaim();
+      return;
+    }
+
     let createResult: Awaited<ReturnType<NonNullable<typeof adapter.createGroup>>>;
     try {
       // RC5: resolve via WhatsApp's onWhatsApp() round-trip so the BR mobile
@@ -508,6 +567,7 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to create WhatsApp group', { err, childGroupName });
+      releaseClaim(); // RC4: release the lock — no group was created, so a retry isn't blocked.
       await alertFailed('falha ao criar o grupo no WhatsApp');
       return;
     }
@@ -541,9 +601,14 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to seed taskflow DB', { err, childBoardId });
+      releaseClaim(); // RC4: seed transaction rolled back (no board row) → release the lock so a retry can proceed.
       await alertFailed('falha ao gravar os dados do quadro');
       return;
     }
+    // RC4: the child_board_registrations row is now durably committed; it is the
+    // source of truth for re-submits (alreadyOnThisParent). Release the lock —
+    // remaining steps are log-and-continue and must not hold it.
+    releaseClaim();
 
     const childAgentGroupId = newTaskId('ag');
     let childMessagingGroupId: string | null = null;

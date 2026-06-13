@@ -664,6 +664,79 @@ describe('handleProvisionChildBoard', () => {
     expect(inviteText).toMatch(/Não foi possível adicionar/);
   });
 
+  it('RC4: holds the provision lock BEFORE creating the WhatsApp group, releases it on success', async () => {
+    seedParentBoard();
+    let lockAtCreate: { person_id: string } | undefined;
+    (mockWhatsAppAdapter!.createGroup as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      // Inspect the lock table at the moment the WhatsApp side-effect fires.
+      const db = new Database(sharedState.tfDbPath);
+      lockAtCreate = db
+        .prepare('SELECT person_id FROM child_board_provision_claims WHERE parent_board_id = ? AND person_id = ?')
+        .get('board-eng-taskflow', 'p-002') as { person_id: string } | undefined;
+      db.close();
+      return { jid: '120363222@g.us', subject: 'Laizys Costa - TaskFlow' };
+    });
+
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+
+    // The lock is held BEFORE createGroup, so a truly concurrent second provision
+    // PK-conflicts on the lock and skips the group side-effect — instead of
+    // minting a second orphan WhatsApp group (RC4).
+    expect(lockAtCreate).toBeDefined();
+    // ...and is released once the registration is durably committed.
+    const db = new Database(sharedState.tfDbPath);
+    const lockAfter = db
+      .prepare('SELECT 1 FROM child_board_provision_claims WHERE parent_board_id = ? AND person_id = ?')
+      .get('board-eng-taskflow', 'p-002');
+    db.close();
+    expect(lockAfter).toBeUndefined();
+  });
+
+  it('RC4: releases the lock when group creation fails (retry can proceed)', async () => {
+    seedParentBoard();
+    (mockWhatsAppAdapter!.createGroup as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('whatsapp down'));
+
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+
+    const db = new Database(sharedState.tfDbPath);
+    const lock = db
+      .prepare('SELECT 1 FROM child_board_provision_claims WHERE parent_board_id = ? AND person_id = ?')
+      .get('board-eng-taskflow', 'p-002');
+    const reg = db
+      .prepare('SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?')
+      .get('board-eng-taskflow', 'p-002');
+    db.close();
+    expect(lock).toBeUndefined(); // lock released → a later retry isn't blocked
+    expect(reg).toBeUndefined(); // and no registration was written
+  });
+
+  it('RC4: an in-flight provision lock is treated as a concurrent claim — skips without a duplicate group', async () => {
+    seedParentBoard();
+    // Simulates a concurrent provision that holds the lock but has not yet seeded
+    // its board. A second provision must NOT mint a second WhatsApp group nor
+    // touch the lock — that would reopen the orphan-group race.
+    const db = initTaskflowDb(sharedState.tfDbPath);
+    db.prepare(
+      `INSERT INTO child_board_provision_claims (parent_board_id, person_id, claimed_at) VALUES (?, ?, ?)`,
+    ).run('board-eng-taskflow', 'p-002', now);
+    db.close();
+
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+
+    expect(mockWhatsAppAdapter!.createGroup).not.toHaveBeenCalled();
+    expect(readChildBoard('board-ux-setd-secti-taskflow')).toBeUndefined();
+    // The in-flight lock is left intact for the owning provision to complete.
+    const after = new Database(sharedState.tfDbPath);
+    const lock = after
+      .prepare('SELECT 1 FROM child_board_provision_claims WHERE parent_board_id = ? AND person_id = ?')
+      .get('board-eng-taskflow', 'p-002');
+    after.close();
+    expect(lock).toBeDefined();
+  });
+
   it('persists trigger_turn_id from content into task_history', async () => {
     seedParentBoard();
     const { handleProvisionChildBoard } = await import('./provision-child-board.js');
