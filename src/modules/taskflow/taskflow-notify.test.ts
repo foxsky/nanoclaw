@@ -28,7 +28,13 @@ vi.mock('../../channels/channel-registry.js', () => ({
   getChannelAdapter: vi.fn((channelType: string) => (channelType === 'whatsapp' ? mockWhatsApp : undefined)),
 }));
 
-import { closeDb, createMessagingGroup, initTestDb, runMigrations } from '../../db/index.js';
+import {
+  closeDb,
+  createMessagingGroup,
+  getMessagingGroupByPlatform,
+  initTestDb,
+  runMigrations,
+} from '../../db/index.js';
 import { log } from '../../log.js';
 
 const BOARD_JID = '120363000000000001@g.us';
@@ -149,5 +155,96 @@ describe('handleTaskflowNotify', () => {
       text: 'no adapter',
     });
     expect(errSpy).toHaveBeenCalled();
+  });
+});
+
+// RC5-ext delivery: a meeting notification to a never-contacted external arrives
+// with a string-built `${phone}@s.whatsapp.net` JID and NO messaging_group, so it
+// used to fail-closed (safe non-delivery). Resolve the phone via WhatsApp's
+// onWhatsApp() round-trip (host-only socket) — confirming the number is real AND
+// canonicalizing the BR 9th-digit form — then lazily cold-provision a DM
+// messaging_group so it actually delivers (and future ones skip the round-trip).
+describe('deliverTextToWhatsAppJid — RC5-ext cold-DM fallback for never-contacted externals', () => {
+  async function deliver(jid: string, text = 'hi external') {
+    const { deliverTextToWhatsAppJid } = await import('./taskflow-notify.js');
+    return deliverTextToWhatsAppJid(jid, text, { board_id: 'board-1' });
+  }
+
+  it('cold-provisions a DM messaging_group via onWhatsApp() and delivers to the CANONICAL jid (9th-digit fixed)', async () => {
+    const builtJid = '5585999992345@s.whatsapp.net'; // wrong 13-digit form
+    const canonicalJid = '558599992345@s.whatsapp.net'; // server-canonical 12-digit form
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => canonicalJid);
+
+    const ok = await deliver(builtJid);
+
+    expect(ok).toBe(true);
+    expect(mockWhatsApp!.lookupPhoneJid).toHaveBeenCalledOnce();
+    // delivered to the canonical JID, never the string-built one
+    expect((mockWhatsApp!.deliver as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(canonicalJid);
+    // a reusable cold-DM messaging_group now exists for the canonical JID
+    const mg = getMessagingGroupByPlatform('whatsapp', canonicalJid);
+    expect(mg).toBeDefined();
+    expect(mg!.is_group).toBe(0);
+  });
+
+  it('reuses an existing messaging_group without a round-trip when the DM jid is already known', async () => {
+    const dmJid = '558599992345@s.whatsapp.net';
+    createMessagingGroup({
+      id: 'mg-known-dm',
+      channel_type: 'whatsapp',
+      platform_id: dmJid,
+      name: 'Known external',
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: '2026-05-16T00:00:00Z',
+    });
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => 'should-not-be-called@s.whatsapp.net');
+
+    const ok = await deliver(dmJid);
+
+    expect(ok).toBe(true);
+    expect(mockWhatsApp!.lookupPhoneJid).not.toHaveBeenCalled();
+    expect((mockWhatsApp!.deliver as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(dmJid);
+  });
+
+  it('FAIL-CLOSED when the number is not on WhatsApp (lookupPhoneJid → null) — no provision, no deliver', async () => {
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => null);
+    const ok = await deliver('5585999990000@s.whatsapp.net');
+    expect(ok).toBe(false);
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+    expect(getMessagingGroupByPlatform('whatsapp', '5585999990000@s.whatsapp.net')).toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('FAIL-CLOSED when lookupPhoneJid throws (transient socket error)', async () => {
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => {
+      throw new Error('socket down');
+    });
+    const ok = await deliver('5585999990000@s.whatsapp.net');
+    expect(ok).toBe(false);
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+  });
+
+  it('does NOT round-trip a GROUP jid with no messaging_group — stays fail-closed (can never onWhatsApp a group)', async () => {
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => 'x@s.whatsapp.net');
+    const ok = await deliver('unknown@g.us');
+    expect(ok).toBe(false);
+    expect(mockWhatsApp!.lookupPhoneJid).not.toHaveBeenCalled();
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-CLOSED when onWhatsApp returns a non-DM JID (local safety invariant, not just adapter trust)', async () => {
+    mockWhatsApp!.lookupPhoneJid = vi.fn(async () => '120363@g.us'); // bogus: a group, not a DM
+    const ok = await deliver('5585999990000@s.whatsapp.net');
+    expect(ok).toBe(false);
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+    expect(getMessagingGroupByPlatform('whatsapp', '120363@g.us')).toBeUndefined();
+  });
+
+  it('FAIL-CLOSED when the adapter has no onWhatsApp capability (no lookupPhoneJid)', async () => {
+    // mockWhatsApp has no lookupPhoneJid in the default fixture
+    const ok = await deliver('5585999990000@s.whatsapp.net');
+    expect(ok).toBe(false);
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
   });
 });
