@@ -361,7 +361,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
  *                      a thread has engaged us once, follow-ups arrive
  *                      with no mention and should still fire.
  */
-function evaluateEngage(
+export function evaluateEngage(
   agent: MessagingGroupAgent,
   text: string,
   isMention: boolean,
@@ -373,7 +373,13 @@ function evaluateEngage(
       const pat = agent.engage_pattern ?? '.';
       if (pat === '.') return true;
       try {
-        return new RegExp(pat).test(text);
+        // Case-insensitive ONLY for literal patterns (no regex metacharacters) —
+        // the bare mention/keyword triggers the migration writes (e.g. `@Tars`)
+        // must fire on `@tars`/`@TARS` (v1 matched mentions case-insensitively;
+        // v1→v2 writes the bare trigger as engage_pattern, Gap #2). A pattern WITH
+        // metacharacters is a deliberate operator regex — respect its case.
+        const literalToken = !/[\\^$.*+?()[\]{}|]/.test(pat);
+        return new RegExp(pat, literalToken ? 'i' : '').test(text);
       } catch {
         // Bad regex: fail open so admin sees the agent responding + can fix.
         return true;
