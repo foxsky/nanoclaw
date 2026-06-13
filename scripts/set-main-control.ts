@@ -45,14 +45,22 @@ async function main() {
     const current = getMainControlMessagingGroup();
     console.log('=== Current main control ===');
     if (current) {
-      console.log(`  id=${current.id}  ${current.channel_type}/${current.platform_id}  name="${current.name ?? '(unnamed)'}"`);
+      console.log(
+        `  id=${current.id}  ${current.channel_type}/${current.platform_id}  name="${current.name ?? '(unnamed)'}"`,
+      );
     } else {
       console.log('  (none designated)');
     }
     console.log('\n=== Available messaging groups ===');
     const all = getDb()
       .prepare('SELECT id, channel_type, platform_id, name, is_main_control FROM messaging_groups ORDER BY created_at')
-      .all() as Array<{ id: string; channel_type: string; platform_id: string; name: string | null; is_main_control: number }>;
+      .all() as Array<{
+      id: string;
+      channel_type: string;
+      platform_id: string;
+      name: string | null;
+      is_main_control: number;
+    }>;
     if (all.length === 0) {
       console.log('  (no messaging groups yet — run /setup or wire a channel first)');
       return;
@@ -76,7 +84,7 @@ async function main() {
       console.error(`No messaging group for ${channelType}/${platformId}.`);
       process.exit(2);
     }
-    setMainControlMessagingGroup(mg.id);
+    warnDemoted(setMainControlMessagingGroup(mg.id));
     console.log(`✅ Main control set: id=${mg.id}  ${channelType}/${platformId}  name="${mg.name ?? '(unnamed)'}"`);
     return;
   }
@@ -89,8 +97,25 @@ async function main() {
     console.error(`No messaging group with id="${id}". Run with no args to list candidates.`);
     process.exit(2);
   }
-  setMainControlMessagingGroup(id);
+  warnDemoted(setMainControlMessagingGroup(id));
   console.log(`✅ Main control set: id=${id}  ${mg.channel_type}/${mg.platform_id}  name="${mg.name ?? '(unnamed)'}"`);
+}
+
+/**
+ * Re-designation leaves the previous main's wired agents at always-engage
+ * (engage_pattern='.') — the setter can't safely auto-revert it (no stored
+ * pre-promotion config; DM vs group differ). Surface it so the operator can
+ * reconfigure rather than have the old main silently keep answering everything.
+ */
+function warnDemoted(demotedPreviousMain: string | null): void {
+  if (!demotedPreviousMain) return;
+  console.warn(
+    `⚠️  Previous main control id=${demotedPreviousMain} stays always-engaged (its wired agents keep engage_pattern='.').\n` +
+      `    If it should no longer answer every message, switch its wiring's engage mode\n` +
+      `    (mention mode ignores engage_pattern):\n` +
+      `      ncl wirings list                                       # find the wiring id(s) for this group\n` +
+      `      ncl wirings update --id <wiring-id> --engage-mode mention`,
+  );
 }
 
 main().catch((err) => {

@@ -78,6 +78,57 @@ describe('messaging-groups main-control primitives', () => {
     expect(getMainControlMessagingGroup()?.id).toBe('mg-2');
   });
 
+  it('first designation returns null (no prior main was demoted)', () => {
+    seedMg('mg-1', '120363111@g.us');
+    expect(setMainControlMessagingGroup('mg-1')).toBeNull();
+  });
+
+  it('same-id re-designation returns null (nothing demoted)', () => {
+    seedMg('mg-1', '120363111@g.us');
+    setMainControlMessagingGroup('mg-1');
+    expect(setMainControlMessagingGroup('mg-1')).toBeNull();
+  });
+
+  it('re-designation returns the demoted prior-main id so the caller can warn', () => {
+    seedMg('mg-1', '120363111@g.us');
+    seedMg('mg-2', '120363222@g.us');
+    setMainControlMessagingGroup('mg-1');
+    // Promoting mg-2 demotes mg-1; the setter reports the demoted id because the
+    // old main's wired agents stay always-engaged and that can't be safely
+    // auto-reverted (no stored pre-promotion engage; DM vs group differ).
+    expect(setMainControlMessagingGroup('mg-2')).toBe('mg-1');
+  });
+
+  it('re-designation leaves the demoted main always-engaged — surfaced via return, not auto-reverted', () => {
+    seedMg('mg-1', '120363111@g.us');
+    seedMg('mg-2', '120363222@g.us');
+    getDb()
+      .prepare(
+        `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at) VALUES ('ag-1', 'Tars', 'main', 'claude', ?)`,
+      )
+      .run(now);
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '@Tars',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now,
+    });
+    setMainControlMessagingGroup('mg-1'); // mg-1 agents → always-engage
+    setMainControlMessagingGroup('mg-2'); // demote mg-1
+
+    const mga = getDb()
+      .prepare("SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE id = 'mga-1'")
+      .get() as { engage_mode: string; engage_pattern: string | null };
+    // Deliberately unchanged: the operator must reconfigure (the CLI warns).
+    expect(mga).toEqual({ engage_mode: 'pattern', engage_pattern: '.' });
+  });
+
   it('throws when the target id does not exist (fail-closed against typos)', () => {
     expect(() => setMainControlMessagingGroup('mg-typo')).toThrow(/does not exist/);
     // No row should have been silently set

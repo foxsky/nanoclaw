@@ -62,14 +62,26 @@ export function getMessagingGroupByPlatform(channelType: string, platformId: str
  * Designed to be called by:
  *   - Skill bootstrap step (one-time during install).
  *   - Admin command path (operator can re-designate later).
+ *
+ * Returns the id of a DIFFERENT main that was demoted (or null on first/same-id
+ * designation). Re-designation leaves the demoted main's wired agents at
+ * always-engage (engage_pattern='.') — that is NOT auto-reverted because the
+ * pre-promotion engage config isn't stored and the safe default differs for a
+ * DM (always-engage is fine) vs a group (would keep spamming). Callers should
+ * warn the operator to reconfigure the old main's engagement.
  */
-export function setMainControlMessagingGroup(id: string): void {
+export function setMainControlMessagingGroup(id: string): string | null {
   const db = getDb();
+  let demotedPreviousMain: string | null = null;
   db.transaction(() => {
     const exists = db.prepare('SELECT 1 FROM messaging_groups WHERE id = ?').get(id);
     if (!exists) {
       throw new Error(`setMainControlMessagingGroup: messaging group "${id}" does not exist`);
     }
+    const prev = db.prepare('SELECT id FROM messaging_groups WHERE is_main_control = 1 AND id != ?').get(id) as
+      | { id: string }
+      | undefined;
+    demotedPreviousMain = prev?.id ?? null;
     db.prepare('UPDATE messaging_groups SET is_main_control = 0 WHERE is_main_control = 1').run();
     db.prepare('UPDATE messaging_groups SET is_main_control = 1 WHERE id = ?').run(id);
     // The main control group is the operator's command channel — it must respond
@@ -82,6 +94,7 @@ export function setMainControlMessagingGroup(id: string): void {
       "UPDATE messaging_group_agents SET engage_mode = 'pattern', engage_pattern = '.' WHERE messaging_group_id = ?",
     ).run(id);
   })();
+  return demotedPreviousMain;
 }
 
 /**
