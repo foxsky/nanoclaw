@@ -15,6 +15,7 @@ import { basename, resolve } from 'node:path';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok } from './util.js';
+import { truncateChars } from '../well-formed.js';
 
 export interface TranscribeOptions {
   model?: string;
@@ -66,7 +67,7 @@ export async function transcribeAudio(filePath: string, opts: TranscribeOptions 
 
   const res = await fetchImpl(OPENAI_TRANSCRIBE_URL, init);
   if (!res.ok) {
-    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    const detail = truncateChars(await res.text().catch(() => ''), 200);
     if (res.status === 401 || res.status === 403) {
       throw new Error(
         `OpenAI auth failed (${res.status}) — the OneCLI gateway has no OpenAI credential assigned to this agent. ` +

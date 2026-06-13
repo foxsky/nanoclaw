@@ -9,7 +9,7 @@ import { openMemoryDbEnsuringDir } from '../memory-store.js';
 import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
 import { SECURITY_DENYLIST, PARITY_DENYLIST } from './security-denylist.js';
-import { toWellFormedText } from '../well-formed.js';
+import { containsLoneSurrogate, toWellFormedText, truncateChars, wellFormedToolResult } from '../well-formed.js';
 import type {
   AgentProvider,
   AgentQuery,
@@ -164,7 +164,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
-    const content = msg.content.length > 2000 ? msg.content.slice(0, 2000) + '...' : msg.content;
+    const content = msg.content.length > 2000 ? truncateChars(msg.content, 2000) + '...' : msg.content;
     lines.push(`**${sender}**: ${content}`, '');
   }
   return lines.join('\n');
@@ -197,12 +197,35 @@ export const preToolUseHook: HookCallback = async (input) => {
   return { continue: true };
 };
 
-/** Clear in-flight tool on PostToolUse / PostToolUseFailure. */
-const postToolUseHook: HookCallback = async () => {
+/**
+ * Clear in-flight tool on PostToolUse / PostToolUseFailure, and sanitize lone
+ * UTF-16 surrogates out of the tool OUTPUT before it reaches the model.
+ *
+ * This is the chokepoint the in-container `mcp-tools/server.ts` wrapper can't
+ * reach: PostToolUse fires for EVERY tool the SDK runs — built-in tools (Read,
+ * Bash output of a file with malformed UTF-8) AND external/config-wired MCP
+ * servers (whose results the SDK transports directly). A lone surrogate in any
+ * of those would otherwise be recorded as a `tool_result` and make the next
+ * request body invalid JSON (400 "no low surrogate in string"). We only rewrite
+ * when a lone surrogate is actually present, so well-formed output is untouched.
+ *
+ * Residual: only the SUCCESS path (`tool_response`) is rewritable —
+ * PostToolUseFailure carries an `error` string with no `updatedToolOutput`
+ * field, so a malformed error message from a failed built-in/external tool
+ * can't be sanitized here (hard SDK limit; narrow).
+ */
+export const postToolUseHook: HookCallback = async (input) => {
   try {
     clearContainerToolInFlight();
   } catch (err) {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const resp = (input as { tool_response?: unknown }).tool_response;
+  if (resp !== undefined && containsLoneSurrogate(resp)) {
+    return {
+      continue: true,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: wellFormedToolResult(resp) },
+    } as unknown as ReturnType<HookCallback>;
   }
   return { continue: true };
 };

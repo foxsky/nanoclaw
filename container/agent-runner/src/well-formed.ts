@@ -21,28 +21,77 @@ export function toWellFormedText(s: string): string {
 }
 
 /**
- * Sanitize every `type:'text'` content item of an MCP tool result so a lone
- * surrogate in DB/API-derived tool output (frequently JSON.stringify'd) can't
- * poison the next request's `tool_result` block. Non-text items and other
- * fields pass through unchanged.
- *
- * Scope: NanoClaw's own tools are text-only, so only `content[].text` is
- * handled. If a tool later returns `resource.text` or `structuredContent`,
- * extend this to walk those too. Results from EXTERNAL/config-wired MCP servers
- * never reach this wrapper — the Claude SDK talks to them directly — so a
- * non-NanoClaw server returning a lone surrogate remains a documented residual
- * (no in-repo chokepoint; the SDK owns that transport).
+ * Truncate to at most `max` UTF-16 code units WITHOUT splitting a surrogate
+ * pair: if the cut lands between an emoji's two halves, drop the dangling high
+ * surrogate. This is the SOURCE fix for the `no low surrogate` 400 — content
+ * truncated for prompt injection (memory recall, transcript excerpts) stays
+ * well-formed, so the boundary sanitizer never has to replace a real emoji with
+ * U+FFFD. Returns the input unchanged when it already fits.
  */
-export function wellFormedToolResult<T>(result: T): T {
-  const r = result as unknown as { content?: unknown };
-  if (!r || !Array.isArray(r.content)) return result;
-  return {
-    ...(result as object),
-    content: r.content.map((c) => {
-      const item = c as { type?: unknown; text?: unknown };
-      return item && item.type === 'text' && typeof item.text === 'string'
-        ? { ...item, text: toWellFormedText(item.text) }
-        : c;
-    }),
-  } as unknown as T;
+export function truncateChars(s: string, max: number): string {
+  if (max <= 0) return '';
+  if (s.length <= max) return s;
+  let end = max;
+  const code = s.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1; // boundary char is a high surrogate
+  return s.slice(0, end);
+}
+
+/**
+ * Keep at most the LAST `max` UTF-16 code units (tail window) without starting
+ * mid-pair: if the cut lands on the low half of an emoji, drop it. Mirror of
+ * `truncateChars` for callers that keep the most-recent tail.
+ */
+export function truncateCharsTail(s: string, max: number): string {
+  if (max <= 0) return '';
+  if (s.length <= max) return s;
+  let start = s.length - max;
+  const code = s.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1; // boundary char is a low surrogate
+  return s.slice(start);
+}
+
+/** True when `s` has no unpaired surrogate (native isWellFormed with a regex fallback). */
+export function isWellFormedText(s: string): boolean {
+  const iw = (s as unknown as { isWellFormed?: () => boolean }).isWellFormed;
+  if (typeof iw === 'function') return iw.call(s);
+  return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+}
+
+/**
+ * Cheap recursive predicate: does any string in `value` contain a lone
+ * surrogate? Lets the PostToolUse hook (claude.ts) skip the
+ * allocate-a-clean-copy path for the overwhelming majority of well-formed tool
+ * outputs — only rewriting output that actually needs it.
+ */
+export function containsLoneSurrogate(value: unknown): boolean {
+  if (typeof value === 'string') return !isWellFormedText(value);
+  if (Array.isArray(value)) return value.some(containsLoneSurrogate);
+  if (value && typeof value === 'object') return Object.values(value).some(containsLoneSurrogate);
+  return false;
+}
+
+/**
+ * Recursively replace lone surrogates in every string of an MCP tool result so
+ * DB/API-derived tool output (often JSON.stringify'd) can't poison the next
+ * request's `tool_result` block. Walks the whole value, so it covers
+ * `content[].text`, `resource.text`, `structuredContent`, and any future field —
+ * not just the common text-content case. Non-string leaves pass through.
+ *
+ * Reaches external/config-wired MCP and built-in SDK tool output too: the
+ * PostToolUse hook (providers/claude.ts) routes every SUCCESSFUL tool_response
+ * through this. The one residual is a tool FAILURE — PostToolUseFailure carries
+ * an `error` string with no `updatedToolOutput` field, so a lone surrogate in a
+ * built-in/external tool's error message can't be rewritten in-repo (hard SDK
+ * limit; narrow — requires a tool to fail AND its error text to be malformed).
+ */
+export function wellFormedToolResult<T>(value: T): T {
+  if (typeof value === 'string') return toWellFormedText(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => wellFormedToolResult(v)) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = wellFormedToolResult(v);
+    return out as unknown as T;
+  }
+  return value;
 }

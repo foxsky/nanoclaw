@@ -11,6 +11,7 @@ import { getSessionRouting } from '../db/session-routing.js';
 import { TIMEZONE, parseZonedToUtc } from '../timezone.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { truncateChars } from '../well-formed.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -159,7 +160,7 @@ export const listTasks: McpToolDefinition = {
 
     const lines = (rows as Array<{ id: string; status: string; process_after: string | null; recurrence: string | null; content: string }>).map((r) => {
       const content = JSON.parse(r.content);
-      const prompt = (content.prompt as string || '').slice(0, 80);
+      const prompt = truncateChars((content.prompt as string) || '', 80);
       return `- ${r.id} [${r.status}] at=${r.process_after || 'now'} ${r.recurrence ? `recur=${r.recurrence} ` : ''}→ ${prompt}`;
     });
 

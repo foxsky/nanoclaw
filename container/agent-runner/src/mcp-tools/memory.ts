@@ -27,6 +27,7 @@ import {
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
+import { truncateChars } from '../well-formed.js';
 
 const NOT_A_BOARD = 'Memory is only available on TaskFlow boards (no board is bound to this group).';
 const DEFAULT_LIMIT = 5;
@@ -65,7 +66,7 @@ export function formatMemories(rows: MemoryRow[]): string {
  */
 export function recallAddendumText(db: Database, boardId: string, limit = RECALL_ADDENDUM_LIMIT): string {
   const recent = recentMemories(db, boardId, limit).map((m) =>
-    m.text.length > RECALL_ADDENDUM_CHARS ? { ...m, text: `${m.text.slice(0, RECALL_ADDENDUM_CHARS)}…` } : m,
+    m.text.length > RECALL_ADDENDUM_CHARS ? { ...m, text: `${truncateChars(m.text, RECALL_ADDENDUM_CHARS)}…` } : m,
   );
   if (recent.length === 0) return '';
   return (
@@ -86,7 +87,7 @@ export function formatMemoryListing(rows: MemoryRow[], maxChars = 100): string {
   const head = rows.length === 1 ? '1 memory' : `${rows.length} memories`;
   const lines = rows.map((m) => {
     const date = m.created_at.slice(0, 10);
-    const snippet = m.text.length > maxChars ? `${m.text.slice(0, maxChars)}…` : m.text;
+    const snippet = m.text.length > maxChars ? `${truncateChars(m.text, maxChars)}…` : m.text;
     return `- ${m.id} [${m.kind}] ${snippet}  (saved ${date})`;
   });
   return `${head} (newest first). Pass an id to memory_forget to delete one:\n${lines.join('\n')}`;

@@ -16,6 +16,7 @@ import type { Database } from 'bun:sqlite';
 import { embedModel, embedText, embedTimeoutMs } from './memory-embed.js';
 import { insertMemory, memoryExists } from './memory-store.js';
 import { ensureHostBypassesProxy } from './ollama-util.js';
+import { truncateChars, truncateCharsTail } from './well-formed.js';
 
 export interface CaptureMessage {
   role: string;
@@ -62,7 +63,7 @@ export function shouldCapture(messages: CaptureMessage[]): boolean {
 /** Role-labelled transcript, bounded to maxChars by keeping the most recent tail. */
 export function buildTranscriptExcerpt(messages: CaptureMessage[], maxChars = MAX_EXCERPT_CHARS): string {
   const full = messages.map((m) => `${m.role}: ${m.content}`).join('\n\n');
-  return full.length <= maxChars ? full : full.slice(full.length - maxChars);
+  return truncateCharsTail(full, maxChars);
 }
 
 const SYSTEM_PROMPT =
@@ -91,7 +92,7 @@ export function parseExtractedFacts(text: string, maxFacts = MAX_FACTS): string[
   const out: string[] = [];
   for (const item of parsed) {
     if (typeof item !== 'string') continue;
-    const fact = item.trim().slice(0, MAX_FACT_CHARS);
+    const fact = truncateChars(item.trim(), MAX_FACT_CHARS);
     if (!fact || seen.has(fact.toLowerCase())) continue;
     seen.add(fact.toLowerCase());
     out.push(fact);
