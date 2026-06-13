@@ -942,4 +942,17 @@ describe('getReservedBoardFolders (RC1 — provision folder-collision dedup)', (
     const { getReservedBoardFolders } = await import('./taskflow-db.js');
     expect(getReservedBoardFolders('/nonexistent/taskflow.db').size).toBe(0);
   });
+
+  it('partial-soft: returns the boards folders even when the board_groups table is absent', async () => {
+    const { getReservedBoardFolders } = await import('./taskflow-db.js');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE boards (id TEXT PRIMARY KEY, group_folder TEXT NOT NULL);
+             INSERT INTO boards (id, group_folder) VALUES ('b1', 'only-boards-taskflow');`);
+    db.close();
+    const reserved = getReservedBoardFolders(dbPath);
+    expect(reserved.has('only-boards-taskflow')).toBe(true); // boards survive the missing board_groups query
+  });
 });

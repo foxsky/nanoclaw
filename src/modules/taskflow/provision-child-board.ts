@@ -5,8 +5,7 @@ import type DatabaseType from 'better-sqlite3';
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { wakeContainer } from '../../container-runner.js';
-import { getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
-import { getReservedBoardFolders } from '../../taskflow-db.js';
+import { getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { createDestinationIfAbsent } from '../agent-to-agent/db/agent-destinations.js';
 import { writeDestinations } from '../agent-to-agent/write-destinations.js';
@@ -22,6 +21,7 @@ import {
   deliverPlainText,
   fixOwnership,
   markWelcomeSent,
+  buildReservedFolderSet,
   pickUniqueAgentFolder,
   resolveParticipantJid,
   sanitizeFolder,
@@ -245,10 +245,7 @@ function computeChildFolderAndName(parsed: ParsedInput): { folder: string; name:
   }
   // RC1: dedup against board folders too (migrated boards' drifted
   // group_folder isn't in agent_groups.folder), so a new child can't collide.
-  const folder = pickUniqueAgentFolder(
-    baseFolder,
-    new Set([...getAllAgentGroups().map((ag) => ag.folder), ...getReservedBoardFolders(TASKFLOW_DB_PATH)]),
-  );
+  const folder = pickUniqueAgentFolder(baseFolder, buildReservedFolderSet(TASKFLOW_DB_PATH));
   if (!folder) {
     log.warn('provision_child_board: invalid group folder name', { baseFolder });
     return null;
@@ -402,17 +399,26 @@ export async function handleProvisionChildBoard(
   try {
     const parent = loadParent(tfDb, session);
     if (!parent) {
-      // RC3 fail-loud: register_person already committed the person, so an
-      // unresolvable parent leaves a registered person with NO board. This was a
-      // silent `return` (the EX-014/Sanunciel partial state). Log loud so it's
-      // diagnosable; a chat alert isn't possible here because the parent — the
-      // alert's own destination (sourceMessagingGroupPlatformId) — is exactly
-      // what failed to resolve.
+      // RC3: register_person already committed the person, so an unresolvable
+      // parent leaves a registered person with NO board (the EX-014/Sanunciel
+      // partial state, previously a silent `return`). Fail loud + alert the
+      // request's origin chat — the parent's own group is what failed to resolve,
+      // but the session's source chat is still reachable.
       log.error('provision_child_board: parent board unresolvable — person registered but board NOT provisioned', {
         sessionId: session.id,
         personId: parsed.personId,
-        personName: parsed.personName,
       });
+      const originPlatformId = session.messaging_group_id
+        ? getMessagingGroup(session.messaging_group_id)?.platform_id
+        : undefined;
+      if (originPlatformId) {
+        await alertProvisionFailed(
+          adapter,
+          originPlatformId,
+          parsed.personName,
+          'não foi possível resolver o quadro pai',
+        );
+      }
       return;
     }
     const alertFailed = (reason: string) =>

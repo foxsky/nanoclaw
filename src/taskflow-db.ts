@@ -814,12 +814,8 @@ export function resolveBoardTimezone(groupFolder: string): string | undefined {
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
-    // ORDER BY id for determinism: boards.group_folder has no UNIQUE constraint,
-    // so if two boards ever share a folder (RC1 — a new board provisioned with a
-    // group_folder override colliding with a migrated board's drifted value),
-    // routing must still resolve to a STABLE board across restarts/VACUUM, not an
-    // undefined SQLite row order. provision dedups against board folders to keep
-    // this empty, but the read stays deterministic regardless.
+    // ORDER BY id: deterministic if boards.group_folder isn't unique (RC1; the
+    // column has no UNIQUE constraint). No-op when it is unique.
     const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? ORDER BY id LIMIT 1`).get(groupFolder) as
       | { id: string }
       | undefined;
@@ -857,12 +853,8 @@ export function resolveTaskflowBoardId(
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
 
-    // ORDER BY id for determinism: boards.group_folder has no UNIQUE constraint,
-    // so if two boards ever share a folder (RC1 — a new board provisioned with a
-    // group_folder override colliding with a migrated board's drifted value),
-    // routing must still resolve to a STABLE board across restarts/VACUUM, not an
-    // undefined SQLite row order. provision dedups against board folders to keep
-    // this empty, but the read stays deterministic regardless.
+    // ORDER BY id: deterministic if boards.group_folder isn't unique (RC1; the
+    // column has no UNIQUE constraint). No-op when it is unique.
     const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? ORDER BY id LIMIT 1`).get(groupFolder) as
       | { id: string }
       | undefined;
@@ -903,14 +895,17 @@ export function getReservedBoardFolders(dbPath = path.join(DATA_DIR, 'taskflow',
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
-    for (const r of db
-      .prepare(`SELECT group_folder FROM boards WHERE group_folder IS NOT NULL AND group_folder != ''`)
-      .all() as Array<{ group_folder: string }>) {
+    // group_folder is NOT NULL in both tables; the != '' guard avoids reserving
+    // the empty folder. board_groups is queried separately so a missing table
+    // (degenerate db) still yields the boards folders.
+    for (const r of db.prepare(`SELECT group_folder FROM boards WHERE group_folder != ''`).all() as Array<{
+      group_folder: string;
+    }>) {
       out.add(r.group_folder);
     }
-    for (const r of db
-      .prepare(`SELECT group_folder FROM board_groups WHERE group_folder IS NOT NULL AND group_folder != ''`)
-      .all() as Array<{ group_folder: string }>) {
+    for (const r of db.prepare(`SELECT group_folder FROM board_groups WHERE group_folder != ''`).all() as Array<{
+      group_folder: string;
+    }>) {
       out.add(r.group_folder);
     }
   } catch {

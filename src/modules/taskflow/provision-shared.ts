@@ -8,7 +8,8 @@ import type { ChannelAdapter } from '../../channels/adapter.js';
 import { DATA_DIR, GROUPS_DIR, PROJECT_ROOT, TIMEZONE } from '../../config.js';
 import { isValidTimezone } from '../../timezone.js';
 import { getDb } from '../../db/connection.js';
-import { createAgentGroup } from '../../db/agent-groups.js';
+import { createAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
+import { getReservedBoardFolders } from '../../taskflow-db.js';
 import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
 import { isValidGroupFolder } from '../../group-folder.js';
 import { phoneToWhatsAppJid } from '../../phone.js';
@@ -95,7 +96,10 @@ export interface BoardRow {
  * would silently no-op for drifted folders.
  */
 export function findBoardByFolder(tfDb: Database.Database, folder: string): BoardRow | undefined {
-  const direct = tfDb.prepare('SELECT * FROM boards WHERE group_folder = ? LIMIT 1').get(folder) as
+  // ORDER BY id: boards.group_folder has no UNIQUE constraint, so resolution
+  // stays deterministic if two boards ever share a folder (RC1). No-op when it's
+  // unique. Matches resolveTaskflowBoardId / resolveBoardTimezone.
+  const direct = tfDb.prepare('SELECT * FROM boards WHERE group_folder = ? ORDER BY id LIMIT 1').get(folder) as
     | BoardRow
     | undefined;
   if (direct) return direct;
@@ -634,6 +638,17 @@ export function wireV2(params: WireV2Params): { messagingGroupId: string } {
     });
   })();
   return { messagingGroupId };
+}
+
+/**
+ * Every folder name a NEW board must avoid: `agent_groups.folder` ∪ board
+ * folders (`boards.group_folder`, incl. migrated-drifted, ∪ `board_groups`).
+ * Owning the union here (RC1) means a future provision call site can't
+ * reintroduce the collision by forgetting board folders. `taskflowDbPath` is
+ * injected so tests can point it at a temp db.
+ */
+export function buildReservedFolderSet(taskflowDbPath: string): Set<string> {
+  return new Set([...getAllAgentGroups().map((ag) => ag.folder), ...getReservedBoardFolders(taskflowDbPath)]);
 }
 
 /**

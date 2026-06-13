@@ -5,8 +5,6 @@ import type DatabaseType from 'better-sqlite3';
 
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
-import { getAllAgentGroups } from '../../db/agent-groups.js';
-import { getReservedBoardFolders } from '../../taskflow-db.js';
 import { ensureContainerConfig, updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
@@ -15,6 +13,7 @@ import { normalizePhone } from '../../phone.js';
 import type { Session } from '../../types.js';
 import { checkMainControlSession } from './permission.js';
 import {
+  buildReservedFolderSet,
   buildRootWelcomeMessage,
   createBoardFilesystem,
   deliverPlainText,
@@ -114,10 +113,7 @@ function computeFolder(parsed: ParsedInput): string | null {
   const base = parsed.groupFolderOverride || sanitizeFolder(parsed.shortCode) + '-taskflow';
   // RC1: dedup against board folders too (migrated boards' drifted group_folder
   // isn't in agent_groups.folder), so a new root board can't collide with one.
-  return pickUniqueAgentFolder(
-    base,
-    new Set([...getAllAgentGroups().map((ag) => ag.folder), ...getReservedBoardFolders(TASKFLOW_DB_PATH)]),
-  );
+  return pickUniqueAgentFolder(base, buildReservedFolderSet(TASKFLOW_DB_PATH));
 }
 
 function buildConfirmationMessage(parsed: ParsedInput, boardId: string, folder: string): string {

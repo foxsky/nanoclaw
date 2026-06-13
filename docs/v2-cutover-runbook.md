@@ -32,7 +32,7 @@ bash migrate-v2.sh
 
 Required operator choices:
 
-- Stop v1 when prompted before copying `taskflow.db`.
+- Stop v1 when prompted — the script now stops it before copying ANY live state (the pre-copy gate runs ahead of `1d-sessions`, not just before `taskflow.db`), and refuses up front (`abort "v1-live-manual"`) if a non-service / nohup-launched v1 is still alive via its PID file. A hard failure in `1d-sessions` / `1e-tasks` now restores v1 and aborts (it no longer continues to cutover with v1 down).
 - Do not proceed if the script reports uncheckpointed WAL frames.
 - Do not proceed if both user and system `nanoclaw` units are installed or active.
 - Confirm the `1c-groups` step reports migrated prompts. The migration writes v2 `CLAUDE.local.md` files through `src/modules/taskflow/migrate-board-claudemd.ts`; it must not copy raw v1 `CLAUDE.md` prose unchanged.
@@ -251,3 +251,45 @@ Verify after writing — a refreshed board contains the motivational-only marker
 grep -l "Scheduled posts are motivational-only" groups/*/CLAUDE.local.md          # converted boards
 grep -L "Then send a separate motivational message" groups/*/CLAUDE.local.md       # old model gone
 ```
+
+## Post-Migration Verification Gate (added 2026-06-13)
+
+The checks above are negative gates (no legacy leaks, no residual `mariany`, integrity ok). They do NOT positively assert that the migrated data is *correct*. Run this gate AFTER all migration steps + the first v2 boot, BEFORE the canary, against the **migrated v2** DBs (`V2=data/v2.db`, `TF=data/taskflow/taskflow.db`). Each line below was verified GREEN in the 2026-06-13 sandbox dry run; the same query against the real cutover must give the analogous result.
+
+```bash
+V2=data/v2.db; TF=data/taskflow/taskflow.db
+# Engage parity (v1 requires_trigger=0 → engage_pattern='.', else the trigger). Every
+# registered group must have exactly one wiring; no group missing/duplicated.
+pnpm exec tsx scripts/q.ts "$V2" "SELECT engage_mode, engage_pattern, COUNT(*) FROM messaging_group_agents GROUP BY 1,2"
+pnpm exec tsx scripts/q.ts "$V2" "SELECT COUNT(*) agent_groups,(SELECT COUNT(*) FROM messaging_group_agents) wirings FROM agent_groups"   # wirings == agent_groups
+
+# F3/F4 — per-board model + persona landed in container_configs (NOT the dead settings.json).
+# total == agent_groups; persona == total; model == count of boards whose v1 settings.json set ANTHROPIC_MODEL.
+pnpm exec tsx scripts/q.ts "$V2" "SELECT COUNT(*) total, SUM(assistant_name IS NOT NULL AND assistant_name!='') persona, SUM(model IS NOT NULL AND model!='') model FROM container_configs"
+
+# F7 — paused v1 tasks carried DORMANT (status='paused', never auto-resumed); active→pending; terminal dropped.
+for ib in $(find data/v2-sessions -name inbound.db); do pnpm exec tsx scripts/q.ts "$ib" "SELECT status, COUNT(*) FROM messages_in WHERE kind='task' GROUP BY status"; done   # expect only pending/paused
+
+# Session continuity — continuation:claude set per session (resume the same v1 conversation).
+for ob in $(find data/v2-sessions -name outbound.db); do pnpm exec tsx scripts/q.ts "$ob" "SELECT COUNT(*) FROM session_state WHERE key='continuation:claude'"; done   # each >=1 for a folder with v1 history
+
+# Holiday travel — board_holidays copied 1:1 with the v1 backup (feeds the holiday-skip gate, 6d).
+pnpm exec tsx scripts/q.ts "$TF" "SELECT COUNT(*) FROM board_holidays"   # == count in the v1 taskflow.db backup
+```
+
+**Destinations (F1/F2) — verify resolution, not just creation.** The migrate `1g-destinations` step + the per-boot `backfillTaskflowDestinations` self-heal translate v1 cross-board (`parent-`/`source-`) and per-person (`notification_group_jid`) forwarding into `agent_destinations`. A link is **only** resolvable once BOTH endpoint group folders exist as registered v2 agent_groups — so on a partial corpus (boards ≫ registered_groups) many stay unresolved and the step degrades (fail-soft, non-abort). That is expected, not a bug. The self-heal re-attempts every boot, so the count should grow as groups exist.
+
+```bash
+pnpm exec tsx scripts/q.ts "$V2" "SELECT COUNT(*) FROM agent_destinations"                 # resolved destinations
+# All resolved destinations must point at a REAL messaging_group (0 dangling):
+pnpm exec tsx scripts/q.ts "$V2" "SELECT COUNT(*) FROM agent_destinations d LEFT JOIN messaging_groups m ON m.id=d.target_id WHERE m.id IS NULL"   # expect 0
+```
+Re-check the resolved count after the first full v2 boot; if cross-board approval forwarding or per-person DMs are expected for a board whose link is still unresolved, confirm its counterpart group was actually migrated (an unresolved link is a missing-group symptom, not a resolver fault).
+
+## Process note: do one live interactive pass on a throwaway box first
+
+`migrate-v2.sh` has a hard TTY guard, so its full interactive path — `setup.sh` bootstrap, container image build, switchover prompts, and the `exec claude "/migrate-from-v1"` boundary — cannot be exercised headless. The 2026-06-13 validation covered the deterministic data steps + orchestration (Codex-reviewed) + 254 passing tests, but NOT that interactive end-to-end. Before flipping `.63`, run one full `bash migrate-v2.sh` on a throwaway box (scratch clone + a corpus snapshot, never `.63`/the live install) to shake out bootstrap/Docker/switchover before the real cutover.
+
+## 2026-06-13 dry-run evidence (supersedes the 2026-05-29 section for current behavior)
+
+Sandbox dry run on the real prod corpus (`VACUUM INTO` snapshot → `/tmp/v1-fixture`; steps run with CWD=`/tmp/v2-dryrun`, live `data/` untouched). Report: `.claude/skills/add-taskflow/docs/2026-06-13-migration-dryrun-gonogo.md` — **GO, zero BLOCKER/HIGH**. All steps exit 0: `db OK groups=10`, `groups configs=10`, `sessions created=10 files=2698`, `tasks migrated=26 paused=20`, `taskflow boards=34 tasks=384`, `destinations` degraded (33 cross + 5 person unresolved — partial-corpus, self-heal). Verified vs DB state + re-attacked by a 14-agent adversarial workflow: engage 8`'.'`/2-trigger; container_configs 3 models + 10 personas; `continuation:claude` authoritative (not mtime) on all 4 multi-JSONL folders; F7 6 pending + 20 paused-dormant; taskflow.db byte-identical + 252 holidays; 356/356 JSONLs byte-identical. (The 2026-05-29 section above predates F1–F7 + the F7 paused-task carry — its `active=117,migrated=117` line has no paused accounting.)
