@@ -160,6 +160,50 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).not.toContain('**SQL fallback:**');
   });
 
+  it('rewrites the "remover quadro do [pessoa]" raw-SQL DELETE row to api_admin remove_child_board (#7)', () => {
+    const input = [
+      '| "criar quadro para [pessoa]" | `provision_child_board` MCP tool. |',
+      '| "remover quadro do [pessoa]" | **⚠️ Raw SQL path — NO undo window.** 1. Check linked tasks: ' +
+        "`SELECT id, title FROM tasks WHERE board_id = 'board-seci-taskflow' AND child_exec_enabled = 1 AND child_exec_person_id = ?` — refuse if any exist. " +
+        "2. Ask confirmation. 3. `DELETE FROM child_board_registrations WHERE parent_board_id = 'board-seci-taskflow' AND person_id = ?`. " +
+        "4. Record history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES ('board-seci-taskflow', 'BOARD', 'child_board_removed', ?, datetime('now'), '{}')`. |",
+      '| "outro comando" | unchanged row. |',
+    ].join('\n');
+
+    const result = migrateBoardClaudeMd(input);
+
+    expect(result.output).toContain("api_admin({ action: 'remove_child_board'");
+    expect(result.output).toContain("person_name: '<pessoa>'"); // the engine requires person_name, not person_id
+    expect(result.output).not.toContain('person_id: <person_id>'); // the wrong arg must not appear
+    expect(result.output).not.toContain('DELETE FROM child_board_registrations');
+    expect(result.output).not.toContain('INSERT INTO task_history'); // the row's manual history INSERT is gone
+    // surrounding rows are untouched
+    expect(result.output).toContain('| "criar quadro para [pessoa]" |');
+    expect(result.output).toContain('| "outro comando" | unchanged row. |');
+
+    // idempotent: a second pass over already-migrated output is a no-op
+    expect(migrateBoardClaudeMd(result.output).output).toBe(result.output);
+  });
+
+  it('drops the blocked raw-UPDATE name-heal from Sender Identification, keeps the read-only matching (#6)', () => {
+    const input = [
+      '**Matching rules (in order):**',
+      "1. **Exact name match**: `SELECT person_id, name FROM board_people WHERE board_id = 'board-seci-taskflow' AND LOWER(name) = LOWER('<sender>')` — if found, use it.",
+      '',
+      "**Auto-update display name**: When matched via first-name or single-person fallback, UPDATE `board_people SET name = '<full sender display name>' WHERE board_id = 'board-seci-taskflow' AND person_id = '<matched_person_id>'` so future messages match exactly.",
+    ].join('\n');
+
+    const result = migrateBoardClaudeMd(input);
+
+    expect(result.output).not.toContain('UPDATE `board_people SET name'); // the blocked raw UPDATE is gone
+    expect(result.output).toContain('Display-name reconciliation');
+    expect(result.output).toContain('init name-heal');
+    // the read-only matching SELECT (allowed in v2) is preserved
+    expect(result.output).toContain('SELECT person_id, name FROM board_people');
+    // idempotent
+    expect(migrateBoardClaudeMd(result.output).output).toBe(result.output);
+  });
+
   it('removes stale v1 schedule_task target_group_jid examples from main prompts', () => {
     const input = [
       '## Scheduling for Other Groups',

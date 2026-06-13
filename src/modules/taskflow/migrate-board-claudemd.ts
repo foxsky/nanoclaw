@@ -160,7 +160,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // tools. Capabilities that mattered for parity must exist as api_* tools.
   output = output.replace(
     /\*\*SQL fallback:\*\*[\s\S]*?\n(?=\*\*Never invent business rules\.\*\*)/g,
-    "**Direct SQL policy (read-only vs mutation).** Prefer the TaskFlow MCP tools (`api_query`, `api_report`, `api_admin`, …). Read-only ad-hoc SQL (`SELECT`) is acceptable for the lookups this guide relies on — sender-identity resolution, cross-board person/manager checks, division-folder uniqueness, and policy flags — when no tool exposes the same read. Mutating SQL (`INSERT`/`UPDATE`/`DELETE`) is permitted ONLY in the narrow cases this guide explicitly documents where no MCP tool exists (e.g. the sender display-name auto-update). Child-board removal is no longer such a case — use `api_admin({ action: 'remove_child_board' })`. **Never** use direct SQL to create, move, reassign, or update tasks — use `api_create_task`/`api_move`/`api_reassign`/`api_update_task` instead. If an operation has no tool and is not a documented exception, explain that it is not available through chat and offer to capture the request in the inbox.\n\n",
+    "**Direct SQL policy (read-only vs mutation).** Prefer the TaskFlow MCP tools (`api_query`, `api_report`, `api_admin`, …). Read-only ad-hoc SQL (`SELECT`) is acceptable for the lookups this guide relies on — sender-identity resolution, cross-board person/manager checks, division-folder uniqueness, and policy flags — when no tool exposes the same read. Mutating SQL (`INSERT`/`UPDATE`/`DELETE`) is NOT permitted — every documented board mutation now has an MCP tool. Child-board removal uses `api_admin({ action: 'remove_child_board' })`; the sender display-name heal is handled host-side (do not run a raw `UPDATE board_people`). **Never** use direct SQL to create, move, reassign, or update tasks — use `api_create_task`/`api_move`/`api_reassign`/`api_update_task` instead. If an operation has no tool and is not a documented exception, explain that it is not available through chat and offer to capture the request in the inbox.\n\n",
   );
   output = output.replace(
     /NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking\. If you use raw SQL to assign a task, the assignee will NOT be notified\./g,
@@ -185,6 +185,26 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
       "| \"modo subtarefa cross-board: aprovação\" | `api_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'approval', sender_name: SENDER })`. |",
       "| \"modo subtarefa cross-board: bloqueado\" | `api_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'blocked', sender_name: SENDER })`. |",
     ].join('\n'),
+  );
+  // The "remover quadro do [pessoa]" command row taught a raw-SQL DELETE on
+  // child_board_registrations (+ a manual task_history INSERT) — both are
+  // mutating SQL the v2 container denylist blocks, contradicting the rewritten
+  // Direct-SQL-policy above which already says child-board removal must use the
+  // tool. Replace the whole row with the api_admin form (matches by the row
+  // anchor + its single pipe-free cell, so it's board-id-agnostic + idempotent).
+  output = output.replace(
+    /\| "remover quadro do \[pessoa\]" \|[^|]*\|/g,
+    "| \"remover quadro do [pessoa]\" | `api_admin({ action: 'remove_child_board', person_name: '<pessoa>', sender_name: SENDER })` — the validated, admin-gated engine path (refuses + reports linked cross-board tasks if any remain, records a `child_board_removed` audit, clears the cached notification JID). The child board stays operational; only the hierarchy link is removed. As in v1, NO cross-group notification is sent — if the user wants the parent/child groups told, send a manual `send_message` note. Confirm with the user first (irreversible). |",
+  );
+  // The sender-identity "Auto-update display name" step taught a raw
+  // `UPDATE board_people` — mutating SQL the v2 denylist blocks. There's no
+  // board-agent replacement (rename_board_person is main-control-gated), and v2
+  // already reconciles display names host-side (the init name-heal, by person_id),
+  // so drop the raw-UPDATE instruction. The SELECT-based matching rules above are
+  // read-only and still resolve the sender. (board-id-agnostic; idempotent.)
+  output = output.replace(
+    /\*\*Auto-update display name\*\*: When matched via first-name or single-person fallback, UPDATE `board_people SET name = [^`]+` so future messages match exactly\./g,
+    '**Display-name reconciliation**: v2 keeps `board_people` display names in sync automatically (the host init name-heal reconciles by `person_id`); do NOT run a raw `UPDATE board_people` (it is blocked). The matching rules above still resolve future messages by first-name / single-person fallback.',
   );
 
   if (!output.includes('Pure greetings with no task intent')) {
