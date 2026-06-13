@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
+import { brPhoneMatchVariants } from './phone.js';
+
 let _taskflowDb: Database.Database | null = null;
 
 /** Lazily open taskflow.db and cache the handle. Writable access is required for lazy expiry/backfill. */
@@ -54,15 +56,24 @@ export function resolveExternalDm(db: Database.Database, dmJid: string): DmRoute
     )
     .get(dmJid) as { external_id: string; display_name: string; phone: string } | undefined;
 
-  // 2. Fallback: extract phone from JID and match
+  // 2. Fallback: extract phone from JID and match. RC5-ext: the stored phone may
+  // differ from the inbound JID only by the BR mobile 9th digit (12- vs 13-digit
+  // form of the same number), so match the equivalence set rather than exact
+  // equality. Fail closed if >1 distinct contact matches — never route an
+  // external into the wrong board's grants.
   if (!contact) {
-    const phone = dmJid.replace(/@s\.whatsapp\.net$/, '').replace(/:\d+$/, '');
-    contact = db
-      .prepare(
-        `SELECT external_id, display_name, phone FROM external_contacts
-         WHERE phone = ? AND status = 'active'`,
-      )
-      .get(phone) as { external_id: string; display_name: string; phone: string } | undefined;
+    const rawPhone = dmJid.replace(/@s\.whatsapp\.net$/, '').replace(/:\d+$/, '');
+    const variants = brPhoneMatchVariants(rawPhone);
+    if (variants.length > 0) {
+      const placeholders = variants.map(() => '?').join(', ');
+      const rows = db
+        .prepare(
+          `SELECT external_id, display_name, phone FROM external_contacts
+           WHERE status = 'active' AND phone IN (${placeholders})`,
+        )
+        .all(...variants) as Array<{ external_id: string; display_name: string; phone: string }>;
+      if (rows.length === 1) contact = rows[0];
+    }
 
     // Backfill direct_chat_jid for future fast lookups
     if (contact) {

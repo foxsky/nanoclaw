@@ -144,4 +144,26 @@ describe('resolveExternalDm', () => {
     const row = db.prepare(`SELECT direct_chat_jid FROM external_contacts WHERE external_id = 'ext-1'`).get() as any;
     expect(row.direct_chat_jid).toBe('5585999991234@s.whatsapp.net');
   });
+
+  it('RC5-ext: resolves an inbound 13-digit JID to a contact stored as the 9-less 12-digit form, and backfills', () => {
+    // Contact stored without the BR mobile 9th digit; she DMs from the canonical
+    // 13-digit JID. Must resolve via the variant set rather than fail.
+    db.exec(`UPDATE external_contacts SET phone = '558599991234', direct_chat_jid = NULL WHERE external_id = 'ext-1'`);
+    const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
+    expect(result).not.toBeNull();
+    expect(result!.externalId).toBe('ext-1');
+    const row = db.prepare(`SELECT direct_chat_jid FROM external_contacts WHERE external_id = 'ext-1'`).get() as any;
+    expect(row.direct_chat_jid).toBe('5585999991234@s.whatsapp.net');
+  });
+
+  it('RC5-ext: fails closed when both 9th-digit forms of one number map to two contacts', () => {
+    // The widened match must not route an external into the wrong board's grants
+    // when the 12- and 13-digit forms are registered to two distinct contacts.
+    db.exec(`UPDATE external_contacts SET direct_chat_jid = NULL WHERE external_id = 'ext-1'`); // 5585999991234 (13-digit)
+    db.exec(
+      `INSERT INTO external_contacts VALUES ('ext-2', 'Other', '558599991234', NULL, 'active', '2026-01-01', '2026-01-01', NULL)`,
+    ); // 9-less 12-digit twin
+    const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
+    expect(result).toBeNull();
+  });
 });

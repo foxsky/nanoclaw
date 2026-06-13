@@ -2854,6 +2854,86 @@ describe('#399 — add_external_participant for a never-contacted invitee', () =
   });
 });
 
+describe('RC5-ext — add_external_participant dedups across the BR 9th-digit split', () => {
+  it('re-adding the same person with the other phone form reuses the contact (no duplicate)', async () => {
+    const { apiCreateMeetingTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const meeting = JSON.parse(
+      (
+        await apiCreateMeetingTaskTool.handler({
+          board_id: BOARD,
+          title: 'Reunião',
+          sender_name: 'alice',
+          scheduled_at: '2026-06-15T14:00:00Z',
+        })
+      ).content[0].text,
+    );
+    expect(meeting.success).toBe(true);
+
+    const addOnce = async (phone: string) =>
+      JSON.parse(
+        (
+          await apiUpdateTaskTool.handler({
+            board_id: BOARD,
+            task_id: meeting.data.id,
+            sender_name: 'alice',
+            updates: { add_external_participant: { name: 'Katia', phone } },
+          })
+        ).content[0].text,
+      );
+
+    // Same human, two 9th-digit forms: 12-digit then its 13-digit twin.
+    expect((await addOnce('558599990000')).success).toBe(true);
+    expect((await addOnce('5585999990000')).success).toBe(true);
+
+    // Exact-match would have created a SECOND external_contacts row; the variant
+    // dedup must reuse the first.
+    const count = (db.query(`SELECT COUNT(*) AS n FROM external_contacts`).get() as { n: number }).n;
+    expect(count).toBe(1);
+  });
+
+  it('removes/revokes an external by the OTHER 9th-digit phone form', async () => {
+    const { apiCreateMeetingTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const meeting = JSON.parse(
+      (
+        await apiCreateMeetingTaskTool.handler({
+          board_id: BOARD,
+          title: 'Reunião',
+          sender_name: 'alice',
+          scheduled_at: '2026-06-15T14:00:00Z',
+        })
+      ).content[0].text,
+    );
+    // Added with the 13-digit form…
+    const added = JSON.parse(
+      (
+        await apiUpdateTaskTool.handler({
+          board_id: BOARD,
+          task_id: meeting.data.id,
+          sender_name: 'alice',
+          updates: { add_external_participant: { name: 'Katia', phone: '5585999990000' } },
+        })
+      ).content[0].text,
+    );
+    expect(added.success).toBe(true);
+    // …removed by the 9-less 12-digit twin must still resolve the contact.
+    const removed = JSON.parse(
+      (
+        await apiUpdateTaskTool.handler({
+          board_id: BOARD,
+          task_id: meeting.data.id,
+          sender_name: 'alice',
+          updates: { remove_external_participant: { phone: '558599990000' } },
+        })
+      ).content[0].text,
+    );
+    expect(removed.success).toBe(true); // exact-match would have errored "not found", leaving the grant active
+    const grant = db
+      .query(`SELECT invite_status FROM meeting_external_participants WHERE meeting_task_id = ?`)
+      .get(meeting.data.id) as { invite_status: string } | null;
+    expect(grant?.invite_status).toBe('revoked');
+  });
+});
+
 describe('emitAutoProvisionIfRequested (#390 — restore V1 auto-provision-on-register)', () => {
   const REQ = {
     person_id: 'p-katia',

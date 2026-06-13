@@ -1168,6 +1168,33 @@ export class TaskflowEngine {
       : [];
   }
 
+  /**
+   * RC5-ext: resolve an external contact by phone across the BR mobile 9th-digit
+   * split (a contact stored as the 12-digit form must still be found when the
+   * operator supplies the 13-digit twin, and vice-versa). Exact match wins; else
+   * a single variant match; ambiguity (>1 distinct contact) → undefined so the
+   * caller fails closed rather than acting on the wrong contact. `phone` may be
+   * raw — it is canonicalized via brPhoneMatchVariants/normalizePhone.
+   */
+  private findExternalContactByPhone(
+    phone: string,
+  ): { external_id: string; direct_chat_jid: string | null } | undefined {
+    const canonical = normalizePhone(phone);
+    const exact = this.db
+      .prepare(`SELECT external_id, direct_chat_jid FROM external_contacts WHERE phone = ?`)
+      .get(canonical) as { external_id: string; direct_chat_jid: string | null } | undefined;
+    if (exact) return exact;
+    const variants = brPhoneMatchVariants(phone);
+    if (variants.length > 1) {
+      const placeholders = variants.map(() => '?').join(', ');
+      const matches = this.db
+        .prepare(`SELECT external_id, direct_chat_jid FROM external_contacts WHERE phone IN (${placeholders})`)
+        .all(...variants) as Array<{ external_id: string; direct_chat_jid: string | null }>;
+      if (matches.length === 1) return matches[0];
+    }
+    return undefined;
+  }
+
   private visibleTaskScope(alias = ''): string {
     const prefix = alias ? `${alias}.` : '';
     return `(${prefix}board_id = ? OR (${prefix}child_exec_board_id = ? AND ${prefix}child_exec_enabled = 1))`;
@@ -6536,12 +6563,12 @@ export class TaskflowEngine {
         const phone = normalizePhone(updates.add_external_participant.phone);
         const displayName = updates.add_external_participant.name;
 
-        // Upsert external contact
+        // Upsert external contact. RC5-ext: match across the BR 9th-digit split so
+        // re-adding the same person with the other phone form (12- vs 13-digit)
+        // reuses the existing contact instead of creating a duplicate.
         let externalId: string;
         let existingChatJid: string | null = null;
-        const existing = this.db.prepare(
-          `SELECT external_id, direct_chat_jid FROM external_contacts WHERE phone = ?`
-        ).get(phone) as { external_id: string; direct_chat_jid: string | null } | undefined;
+        const existing = this.findExternalContactByPhone(phone);
 
         if (existing) {
           externalId = existing.external_id;
@@ -6649,8 +6676,9 @@ export class TaskflowEngine {
         const { external_id, phone, name } = updates.remove_external_participant;
         let externalId = external_id;
         if (!externalId && phone) {
-          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | null;
-          externalId = row?.external_id;
+          // RC5-ext: match across the BR 9th-digit split so a revoke by the other
+          // phone form still finds the contact (else the grant stays active).
+          externalId = this.findExternalContactByPhone(phone)?.external_id;
         }
         if (!externalId && name) {
           const row = this.db.prepare(
@@ -6717,8 +6745,9 @@ export class TaskflowEngine {
         const { external_id, phone } = updates.reinvite_external_participant;
         let externalId = external_id;
         if (!externalId && phone) {
-          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | null;
-          externalId = row?.external_id;
+          // RC5-ext: match across the BR 9th-digit split so a re-invite by the
+          // other phone form still finds the contact.
+          externalId = this.findExternalContactByPhone(phone)?.external_id;
         }
         if (!externalId) {
           return { success: false, error: 'External contact not found.' };
