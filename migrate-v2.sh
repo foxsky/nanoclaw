@@ -47,7 +47,7 @@ ABORTED_AT=""
 # final summary can surface a degraded outcome instead of green-✓ everywhere.
 MIGRATION_DEGRADED=false
 MIGRATION_DEGRADED_REASONS=()
-# Flip to true only after migrate-v2.sh has stopped v1 itself (pre-1f gate,
+# Flip to true only after migrate-v2.sh has stopped v1 itself (pre-copy gate,
 # or the late switchover re-stop). Any unexpected exit while this is true
 # means v1 is down with no replacement — the EXIT trap must restore it.
 V1_STOPPED_BY_MIGRATION=false
@@ -374,14 +374,14 @@ run_step() {
   fi
 }
 
-# ─── v1 service state (detected once, reused by 1f gate + switchover) ──
+# ─── v1 service state (detected once, reused by pre-copy gate + switchover) ──
 #
-# Detect v1 service state ONCE at script start. The pre-1f-taskflow gate
-# below needs v1 stopped (taskflow.ts refuses to copy against a live v1 to
-# avoid WAL race + silent data loss), so we ask up front and keep that
-# state through the rest of the migration. The late "Service switchover"
-# block reads V1_WAS_RUNNING (not a re-detection) so it still knows to
-# offer the v2 start prompt even though v1 is already down by then.
+# Detect v1 service state ONCE at script start. The pre-copy v1-stop gate
+# (just before 1d-sessions) needs v1 stopped before any live-mutating state is
+# copied (sessions/tasks/taskflow), so we ask up front and keep that state
+# through the rest of the migration. The late "Service switchover" block reads
+# V1_WAS_RUNNING (not a re-detection) so it still knows to offer the v2 start
+# prompt even though v1 is already down by then.
 
 V1_SERVICE=""
 V2_SERVICE=""
@@ -470,8 +470,8 @@ mark_degraded() {
 }
 
 # Restart v1 and move v2's copied taskflow.db aside. Used when:
-#  - operator picks 'skip' at the late switchover prompt AFTER pre-1f stopped v1
-#  - v2 service install fails after pre-1f stopped v1
+#  - operator picks 'skip' at the late switchover prompt AFTER pre-copy stopped v1
+#  - v2 service install fails after pre-copy stopped v1
 #  - operator picks 'revert' after v2 was up briefly
 # Sets MIGRATION_DEGRADED on any sub-step failure (sudo cache expired,
 # mv failed) so the summary shows the operator needs to act manually.
@@ -578,19 +578,13 @@ run_step "1c-groups" \
   "Copy group folders" \
   "setup/migrate-v2/groups.ts" "$V1_PATH"
 
-run_step "1d-sessions" \
-  "Copy session data" \
-  "setup/migrate-v2/sessions.ts" "$V1_PATH"
-
-run_step "1e-tasks" \
-  "Port scheduled tasks" \
-  "setup/migrate-v2/tasks.ts" "$V1_PATH"
-
-# Pre-1f-taskflow gate — taskflow.ts refuses to copy v1's taskflow.db
-# while v1 is live (isV1ServiceActive() probe blocks the copy to prevent
-# silent WAL race + data loss across all groups). If v1 is running, ask
-# the user to stop now; we keep v1 stopped through Phase 2/3 so the late
-# Service switchover block can do an orderly v2 start.
+# Stop v1 BEFORE copying any live-mutating v1 state (session JSONL transcripts,
+# scheduled tasks, taskflow.db). If v1 keeps running it can append to the active
+# conversation JSONL mid-copy (→ a stale/truncated resumed transcript) or mutate
+# taskflow.db (→ WAL race + silent data loss across all groups); taskflow.ts also
+# refuses outright while v1 is live. db/groups above read only static config, so
+# they ran with v1 up. We keep v1 stopped through Phase 2/3 so the late Service
+# switchover block can do an orderly v2 start.
 if [ "$V1_WAS_RUNNING" = "true" ]; then
   STOP_ANSWER_FILE=$(mktemp)
   pnpm exec tsx setup/migrate-v2/switchover-prompt.ts --stop-for-taskflow "$STOP_ANSWER_FILE" || true
@@ -598,8 +592,8 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
   rm -f "$STOP_ANSWER_FILE"
 
   if [ "$STOP_ANSWER" != "stop" ]; then
-    step_fail "v1 stop declined — TaskFlow copy cannot proceed safely without it"
-    abort "1f-taskflow-prereq"
+    step_fail "v1 stop declined — copying live v1 state cannot proceed safely without it"
+    abort "v1-stop-pre-copy"
   fi
 
   if [ "$PLATFORM_SERVICE" = "systemd" ]; then
@@ -618,7 +612,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       step_ok "Stopped $V1_SERVICE"
     else
       step_fail "Could not stop $V1_SERVICE (run '$hint' manually then re-run)"
-      abort "1f-taskflow-prereq"
+      abort "v1-stop-pre-copy"
     fi
   elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
     if launchctl unload "$HOME/Library/LaunchAgents/${V1_SERVICE}.plist" 2>/dev/null; then
@@ -626,9 +620,63 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       step_ok "Stopped $V1_SERVICE"
     else
       step_fail "Could not stop $V1_SERVICE"
-      abort "1f-taskflow-prereq"
+      abort "v1-stop-pre-copy"
     fi
   fi
+fi
+
+# After any service stop, scan for a STILL-live v1 via its PID file — catches a
+# manually/nohup-launched v1, or a SECOND instance running alongside the service
+# one (which the stop above didn't touch). We can't stop a non-service process
+# for the operator, and copying against it corrupts session transcripts AND
+# scheduled tasks (tasks do NOT re-converge on a re-run, unlike sessions), so
+# refuse up front rather than let taskflow.ts catch it at 1f after 1d/1e copied.
+for pidf in "$V1_PATH/nanoclaw.pid" "$V1_PATH/data/nanoclaw.pid" "$V1_PATH/run/nanoclaw.pid"; do
+  [ -f "$pidf" ] || continue
+  v1pid=$(tr -dc '0-9' < "$pidf" 2>/dev/null)
+  [ -n "$v1pid" ] && [ "$v1pid" -gt 1 ] 2>/dev/null || continue
+  # kill -0 succeeds for our own live process; /proc/<pid> covers a live process
+  # owned by another user (kill -0 would give EPERM). Either ⇒ alive. (A reused
+  # stale pid can false-positive — fail-closed + operator-fixable: stop it or
+  # remove the stale pid file, then re-run.)
+  if kill -0 "$v1pid" 2>/dev/null || { [ -d /proc ] && [ -d "/proc/$v1pid" ]; }; then
+    step_fail "A live v1 process (pid $v1pid from $pidf) is running but not service-managed — stop it, then re-run"
+    abort "v1-live-manual"
+  fi
+done
+
+run_step "1d-sessions" \
+  "Copy session data" \
+  "setup/migrate-v2/sessions.ts" "$V1_PATH"
+
+# v1 is already stopped (gate above). A HARD failure here must not silently
+# proceed to cutover with v1 down — restore v1 and abort (mirrors 1f-taskflow
+# below). A normal "no v1 sessions dir" exits SKIPPED (not failed), so this
+# guard does not fire on it.
+if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
+  echo
+  step_fail "1d-sessions failed with v1 already stopped — aborting before cutover"
+  echo "  $(dim 'See:') $STEPS_DIR/1d-sessions.log"
+  if [ "$V1_WAS_RUNNING" = "true" ]; then
+    rollback_to_v1_no_v2
+  fi
+  abort "1d-sessions"
+fi
+
+run_step "1e-tasks" \
+  "Port scheduled tasks" \
+  "setup/migrate-v2/tasks.ts" "$V1_PATH"
+
+# Same guard as 1d: v1 is stopped, so a hard failure must restore v1 + abort
+# rather than continue to cutover with tasks half-ported.
+if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
+  echo
+  step_fail "1e-tasks failed with v1 already stopped — aborting before cutover"
+  echo "  $(dim 'See:') $STEPS_DIR/1e-tasks.log"
+  if [ "$V1_WAS_RUNNING" = "true" ]; then
+    rollback_to_v1_no_v2
+  fi
+  abort "1e-tasks"
 fi
 
 run_step "1f-taskflow" \
@@ -645,7 +693,7 @@ if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
   echo
   echo "  $(dim 'See:') $STEPS_DIR/1f-taskflow.log"
   echo
-  # If pre-1f stopped v1, restore it before aborting — otherwise the
+  # If pre-copy stopped v1, restore it before aborting — otherwise the
   # operator is stranded with both v1 down and v2 not installed.
   # rollback_to_v1_no_v2 marks MIGRATION_DEGRADED on any sub-failure
   # (sudo cache expired, mv failed); the EXIT trap still runs.
@@ -887,7 +935,7 @@ echo
 # would strand the operator with v1 down.
 
 # Platform + service names were detected once before Phase 1. V1_WAS_RUNNING
-# reflects v1's state at script start; if 1f-taskflow's pre-stop gate fired,
+# reflects v1's state at script start; if the pre-copy v1-stop gate fired,
 # v1 is already stopped here but V1_WAS_RUNNING stays true so the switchover
 # block still offers the v2 start prompt.
 
@@ -902,7 +950,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
   rm -f "$SWITCH_ANSWER_FILE"
 
   if [ "$SWITCH_ANSWER" = "switch" ]; then
-    # v1 was already stopped by the 1f-taskflow pre-stop gate. Verify and
+    # v1 was already stopped by the pre-copy v1-stop gate. Verify and
     # log; only stop again if somehow still running (Restart=on-failure on
     # a system unit can resurrect v1 between phases). Honors V1_SYSTEMD_SCOPE
     # so a sudo-installed v1 that re-activated isn't missed by a --user probe.
@@ -963,7 +1011,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       step_ok "v2 service installed and started $(dim "($V2_SERVICE)")"
       SERVICE_SWITCHED=true
     else
-      # v2 install failed and v1 is still down from pre-1f. Don't strand
+      # v2 install failed and v1 is still down from pre-copy. Don't strand
       # the operator: restart v1, move v2 taskflow.db aside, leave a clear
       # failure trail. SERVICE_SWITCHED stays false so the keep/revert
       # prompt is skipped.
@@ -1008,7 +1056,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       fi
     fi
   else
-    # User picked 'skip' at the offer-switch prompt AFTER pre-1f stopped v1.
+    # User picked 'skip' at the offer-switch prompt AFTER pre-copy stopped v1.
     # We can't leave both v1 and v2 down. Restore v1 + invalidate the copied
     # taskflow.db so a future rerun re-copies fresh.
     step_info "v1 was stopped to copy TaskFlow data; restoring since you opted not to switch"

@@ -40,10 +40,18 @@ async function main(): Promise<void> {
   if (mode === '--stop-for-taskflow') {
     const answer = await p.select({
       message:
-        'v1 is running. TaskFlow data can only be copied safely with v1 stopped (otherwise live writes during the copy are silently dropped). Stop v1 now?',
+        "v1 is running. v1's session transcripts, scheduled tasks, and TaskFlow data can only be copied safely with v1 stopped (otherwise live writes during the copy are silently dropped or truncate the resumed conversation). Stop v1 now?",
       options: [
-        { value: 'stop', label: 'Stop v1 now', hint: 'leaves v1 stopped through Phase 2/3 — v2 service prompt at the end' },
-        { value: 'cancel', label: 'Cancel migration', hint: 'no changes made; re-run after stopping v1 yourself' },
+        {
+          value: 'stop',
+          label: 'Stop v1 now',
+          hint: 'leaves v1 stopped through Phase 2/3 — v2 service prompt at the end',
+        },
+        {
+          value: 'cancel',
+          label: 'Cancel migration',
+          hint: 'v1 left running; re-run after stopping v1 yourself (env/db/group copies so far are idempotent)',
+        },
       ],
     });
     fs.writeFileSync(outFile, p.isCancel(answer) ? 'cancel' : String(answer));

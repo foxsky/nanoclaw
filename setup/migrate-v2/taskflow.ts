@@ -12,9 +12,10 @@
  *
  * Safety contract (Codex gpt-5.5/xhigh BLOCKERs 2026-05-25):
  *
- * 1. WAL gate. migrate-v2.sh runs Phase-1 steps while v1 is still live
- *    (v1 is only stopped later, in the switchover block). v1 uses WAL
- *    journaling, so a live v1 has committed-but-not-checkpointed frames
+ * 1. WAL gate. migrate-v2.sh stops a service-managed v1 before the Phase-1
+ *    copy steps (the pre-copy gate just before 1d-sessions), but a manually
+ *    launched v1 — or any residual live writer — could still be running. v1
+ *    uses WAL journaling, so a live v1 has committed-but-not-checkpointed frames
  *    in `taskflow.db-wal`. A plain file copy of just `taskflow.db` would
  *    silently drop those frames → silent data loss. This step REFUSES
  *    if `-wal` exists and is non-empty: the user must stop v1 first.
@@ -292,7 +293,9 @@ function main(): void {
     let populated = false;
     try {
       const probe = new Database(v2Db, { readonly: true });
-      const row = probe.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='boards'`).get() as { n: number };
+      const row = probe
+        .prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='boards'`)
+        .get() as { n: number };
       if (row.n > 0) {
         const boards = probe.prepare('SELECT COUNT(*) AS n FROM boards').get() as { n: number };
         if (boards.n > 0) populated = true;
