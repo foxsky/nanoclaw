@@ -196,8 +196,11 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const result = migrateBoardClaudeMd(input);
 
     expect(result.output).not.toContain('UPDATE `board_people SET name'); // the blocked raw UPDATE is gone
-    expect(result.output).toContain('Display-name reconciliation');
-    expect(result.output).toContain('init name-heal');
+    expect(result.output).toContain('Display-name corrections');
+    expect(result.output).toContain('rename_board_person'); // the only correction path left in v2
+    // Prose must NOT overstate the host heal — it only dedups truncated names,
+    // it does NOT replicate v1's runtime match-then-update at runtime.
+    expect(result.output).toContain('does NOT rewrite a matched person');
     // the read-only matching SELECT (allowed in v2) is preserved
     expect(result.output).toContain('SELECT person_id, name FROM board_people');
     // idempotent

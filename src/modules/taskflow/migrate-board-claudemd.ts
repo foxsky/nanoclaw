@@ -190,21 +190,26 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // child_board_registrations (+ a manual task_history INSERT) — both are
   // mutating SQL the v2 container denylist blocks, contradicting the rewritten
   // Direct-SQL-policy above which already says child-board removal must use the
-  // tool. Replace the whole row with the api_admin form (matches by the row
-  // anchor + its single pipe-free cell, so it's board-id-agnostic + idempotent).
+  // tool. Replace the whole row with the api_admin form. The regex anchors on
+  // the command label + a single pipe-free cell — board-id-agnostic + idempotent,
+  // and it matches the tested v1 single-cell row form. A hand-edited multi-cell
+  // variant of this row would not match (acceptable: the v1 corpus uses the
+  // single-cell form).
   output = output.replace(
     /\| "remover quadro do \[pessoa\]" \|[^|]*\|/g,
     "| \"remover quadro do [pessoa]\" | `api_admin({ action: 'remove_child_board', person_name: '<pessoa>', sender_name: SENDER })` — the validated, admin-gated engine path (refuses + reports linked cross-board tasks if any remain, records a `child_board_removed` audit, clears the cached notification JID). The child board stays operational; only the hierarchy link is removed. As in v1, NO cross-group notification is sent — if the user wants the parent/child groups told, send a manual `send_message` note. Confirm with the user first (irreversible). |",
   );
   // The sender-identity "Auto-update display name" step taught a raw
   // `UPDATE board_people` — mutating SQL the v2 denylist blocks. There's no
-  // board-agent replacement (rename_board_person is main-control-gated), and v2
-  // already reconciles display names host-side (the init name-heal, by person_id),
-  // so drop the raw-UPDATE instruction. The SELECT-based matching rules above are
-  // read-only and still resolve the sender. (board-id-agnostic; idempotent.)
+  // board-agent replacement (rename_board_person is main-control-gated), and
+  // v2's host init name-heal only DEDUPS truncated duplicate names per
+  // `person_id` — it does NOT replicate v1's runtime match-then-UPDATE. So drop
+  // the raw UPDATE and point corrections at rename_board_person. The
+  // SELECT-based matching rules above are read-only and still resolve the
+  // sender. (board-id-agnostic; idempotent.)
   output = output.replace(
     /\*\*Auto-update display name\*\*: When matched via first-name or single-person fallback, UPDATE `board_people SET name = [^`]+` so future messages match exactly\./g,
-    '**Display-name reconciliation**: v2 keeps `board_people` display names in sync automatically (the host init name-heal reconciles by `person_id`); do NOT run a raw `UPDATE board_people` (it is blocked). The matching rules above still resolve future messages by first-name / single-person fallback.',
+    '**Display-name corrections**: the v1 runtime auto-update — a raw `UPDATE board_people` on a first-name / single-person match — is GONE (mutating SQL the v2 denylist blocks). v2 only dedups *truncated* duplicate names host-side at init (the name-heal, by `person_id`); it does NOT rewrite a matched person to a fuller sender display name at runtime. To correct a display name, use `rename_board_person` (main-control-gated). The read-only matching rules above still resolve future messages by first-name / single-person fallback.',
   );
 
   if (!output.includes('Pure greetings with no task intent')) {
