@@ -252,6 +252,30 @@ grep -l "Scheduled posts are motivational-only" groups/*/CLAUDE.local.md        
 grep -L "Then send a separate motivational message" groups/*/CLAUDE.local.md       # old model gone
 ```
 
+### 6e. WhatsApp anti-abuse pacing for bulk group creation (RC6) — operator control
+
+**Why this is a runbook step and not code:** WhatsApp's anti-abuse heuristics log a number out after a burst of rapid group creations (in v1 this fired at roughly **6 rapid creations** and forced a full re-pair). A logout mid-cutover is the worst time to hit it — it halts ALL delivery and ALL further provisioning at once. This is a one-off cutover-day exposure (the steady state creates groups one-at-a-time as people self-onboard), so a permanent runtime rate-limiter would over-engineer a single event and throttle legitimate self-service forever. The control is **operator pacing**, by design.
+
+**When it applies.** Any step or session that creates WhatsApp groups in quick succession:
+- bulk board (re)provisioning at cutover (the main risk — many `provision_root_board` / `provision_child_board` in a row);
+- the 6b Sanunciel re-provision and the 6c Hudson cleanup (each `create_group` / re-provision is a creation);
+- any operator- or agent-driven burst of `provision_child_board` / `create_group`.
+
+**The rule. Do not create more than ~5 WhatsApp groups in a rolling few-minute window.** Prefer **one at a time**: fire a single provision, confirm it landed (group created **and** the invite-link / confirmation message was delivered to the source chat) before starting the next, and leave a deliberate gap (tens of seconds, not milliseconds) between creations. If you must create many, batch ~5, then pause several minutes before the next batch. Sequence the known cutover creations (6b, 6c, any backlog) rather than firing them together.
+
+**Detection — stop immediately if you see any of these:**
+- `createGroup` starts failing with auth / `401` / logged-out errors, or delivery stops across all boards at once;
+- the host log shows a WhatsApp connection drop / re-auth loop (`logs/nanoclaw.error.log`).
+
+**Recovery (re-pair the bot number).** Pairing-code auth works from servers; QR returns error 515. Clear the stored creds first, then re-pair, then wait before resuming creations:
+```bash
+# 1. Stop creating groups. 2. Clear the stale session and re-pair (pairing-code method):
+rm -f store/auth/creds.json
+pnpm exec tsx src/whatsapp-auth-pairing.ts <bot-phone-number>   # wait for the first QR event before it prints the pairing code
+# 3. Enter the code on the bot's WhatsApp. 4. Confirm the host reconnects (logs/nanoclaw.log), then resume — paced.
+```
+After recovery, resume the remaining creations **more slowly** (smaller batches, longer gaps) — a number that just tripped anti-abuse is more likely to trip again.
+
 ## Post-Migration Verification Gate (added 2026-06-13)
 
 The checks above are negative gates (no legacy leaks, no residual `mariany`, integrity ok). They do NOT positively assert that the migrated data is *correct*. Run this gate AFTER all migration steps + the first v2 boot, BEFORE the canary, against the **migrated v2** DBs (`V2=data/v2.db`, `TF=data/taskflow/taskflow.db`). Each line below was verified GREEN in the 2026-06-13 sandbox dry run; the same query against the real cutover must give the analogous result.
