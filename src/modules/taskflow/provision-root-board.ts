@@ -6,6 +6,7 @@ import type DatabaseType from 'better-sqlite3';
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { getAllAgentGroups } from '../../db/agent-groups.js';
+import { ensureContainerConfig, updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
@@ -174,20 +175,6 @@ function callerAgentName(parsed: ParsedInput): string {
   return parsed.trigger.startsWith('@') ? parsed.trigger.slice(1) : parsed.trigger;
 }
 
-function writeAgentSettingsJson(agentGroupId: string, model: string): void {
-  const settingsDir = path.join(DATA_DIR, 'v2-sessions', agentGroupId, '.claude-shared');
-  fs.mkdirSync(settingsDir, { recursive: true });
-  const settingsFile = path.join(settingsDir, 'settings.json');
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-  } catch {
-    // first write or unreadable — start fresh
-  }
-  const merged = { ...existing, model };
-  fs.writeFileSync(settingsFile, JSON.stringify(merged, null, 2) + '\n');
-}
-
 export async function handleProvisionRootBoard(
   content: Record<string, unknown>,
   session: Session,
@@ -302,9 +289,16 @@ export async function handleProvisionRootBoard(
     }
 
     try {
-      writeAgentSettingsJson(agentGroupId, parsed.model);
+      // The model's only LIVE sink is container_configs.model — v2 invokes the
+      // Agent SDK with settingSources:[], so a model in settings.json is inert.
+      // ensureContainerConfig defensively: initGroupFilesystem's ensureContainerConfig
+      // runs only AFTER its filesystem writes, so a partial fs failure above (caught
+      // as non-fatal) could leave the row absent — then this UPDATE would no-op AND
+      // the first spawn's materializeContainerJson would throw on the missing row.
+      ensureContainerConfig(agentGroupId);
+      updateContainerConfigScalars(agentGroupId, { model: parsed.model });
     } catch (err) {
-      log.error('provision_root_board: failed to write settings.json (non-fatal)', { err });
+      log.error('provision_root_board: failed to set container model (non-fatal)', { err });
     }
 
     if (messagingGroupId) {

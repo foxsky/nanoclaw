@@ -231,6 +231,30 @@ describe('handleProvisionRootBoard', () => {
     dbAgain.close();
   });
 
+  it('writes the model to container_configs.model (the live sink), not the dead settings.json', async () => {
+    // V2 invokes the Agent SDK with settingSources:[], so .claude-shared/
+    // settings.json is inert for the model; the live sink is container_configs.model.
+    const { handleProvisionRootBoard } = await import('./provision-root-board.js');
+    await handleProvisionRootBoard({ ...validInput, model: 'claude-opus-4-8' }, fakeSession, {} as never);
+
+    const { getContainerConfig } = await import('../../db/container-configs.js');
+    const ag = getDb().prepare('SELECT id FROM agent_groups WHERE folder LIKE ?').get('eng-taskflow%') as {
+      id: string;
+    };
+    expect(getContainerConfig(ag.id)?.model).toBe('claude-opus-4-8');
+  });
+
+  it('defaults container_configs.model when no model is given', async () => {
+    const { handleProvisionRootBoard } = await import('./provision-root-board.js');
+    await handleProvisionRootBoard(validInput, fakeSession, {} as never);
+
+    const { getContainerConfig } = await import('../../db/container-configs.js');
+    const ag = getDb().prepare('SELECT id FROM agent_groups WHERE folder LIKE ?').get('eng-taskflow%') as {
+      id: string;
+    };
+    expect(getContainerConfig(ag.id)?.model).toBe('claude-sonnet-4-6');
+  });
+
   it('drops when a board with the same short_code already exists', async () => {
     const db = initTaskflowDb(sharedState.tfDbPath);
     db.prepare(
