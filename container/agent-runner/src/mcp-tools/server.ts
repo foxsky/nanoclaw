@@ -13,6 +13,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import type { McpToolDefinition } from './types.js';
+import { wellFormedToolResult } from '../well-formed.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -74,20 +75,24 @@ export async function startMcpServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const tool = toolMap.get(name);
+    // Every tools/call text exit is sanitized: a lone UTF-16 surrogate in tool
+    // output (often DB/API text via JSON.stringify, or a model-supplied tool
+    // name) would otherwise poison the next request's tool_result block and make
+    // the Anthropic API reject the whole request (400 "no low surrogate ...").
     if (!tool || (allow && !allow.has(name))) {
-      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
+      return wellFormedToolResult({ content: [{ type: 'text', text: `Unknown tool: ${name}` }] });
     }
     if (allow && argGuards) {
       const reason = argGuards.get(name)?.((args ?? {}) as Record<string, unknown>);
       if (reason) {
-        return {
+        return wellFormedToolResult({
           content: [
             { type: 'text', text: JSON.stringify({ success: false, error_code: 'permission_denied', error: reason }) },
           ],
-        };
+        });
       }
     }
-    return tool.handler(args ?? {});
+    return wellFormedToolResult(await tool.handler(args ?? {}));
   });
 
   const transport = new StdioServerTransport();

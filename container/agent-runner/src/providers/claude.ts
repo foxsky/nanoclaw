@@ -9,6 +9,7 @@ import { openMemoryDbEnsuringDir } from '../memory-store.js';
 import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
 import { SECURITY_DENYLIST, PARITY_DENYLIST } from './security-denylist.js';
+import { toWellFormedText } from '../well-formed.js';
 import type {
   AgentProvider,
   AgentQuery,
@@ -89,7 +90,10 @@ class MessageStream {
   push(text: string): void {
     this.queue.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      // Sanitize here so EVERY user message — the initial prompt AND every
+      // follow-up push (poll-loop.ts query.push) — is well-formed before the
+      // SDK serializes it into the request body.
+      message: { role: 'user', content: toWellFormedText(text) },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -320,9 +324,11 @@ export class ClaudeProvider implements AgentProvider {
 
   query(input: QueryInput): AgentQuery {
     const stream = new MessageStream();
-    stream.push(input.prompt);
+    stream.push(input.prompt); // MessageStream.push() strips lone surrogates
 
-    const instructions = input.systemContext?.instructions;
+    const instructions = input.systemContext?.instructions
+      ? toWellFormedText(input.systemContext.instructions) // appended to systemPrompt, not via push()
+      : undefined;
     const visibleMcpServers = Object.fromEntries(
       Object.entries(this.mcpServers).filter(([serverName]) => isSdkVisibleMcpServer(serverName)),
     );
