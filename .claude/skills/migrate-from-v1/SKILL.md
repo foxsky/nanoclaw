@@ -101,14 +101,12 @@ v2 auto-creates a `users` row for every sender it sees (via `extractAndUpsertUse
 1. Query `users` table: `SELECT id, kind, display_name FROM users`.
 2. If exactly one user exists, confirm: `AskUserQuestion`: "Is `<display_name>` (`<id>`) you?" — Yes / No, let me type it.
 3. If multiple users exist, present them as options in `AskUserQuestion`.
-4. If no users exist yet (v2 hasn't received traffic — e.g., the service was not switched during Phase 0b), **pre-seed from v1's message history instead of blocking on a test message**. v1's `registered_groups.is_main=1` is the user's primary DM/channel; the sender(s) there are owner candidates. Read `<handoff.v1_path>/store/messages.db`:
+4. If no users exist yet (v2 hasn't received traffic — e.g., the service was not switched during Phase 0b), **pre-seed from v1's message history instead of blocking on a test message**. Do NOT key off `registered_groups.is_main` — v1 never set it (it is `0` for every row; v2's primary-chat designation lives in `messaging_groups.is_main_control`, set in Phase 0a.1). Read `<handoff.v1_path>/store/messages.db` and rank the top non-bot human senders. v1 tags its own bot replies with `is_bot_message=1`, so filter on `is_bot_message=0` (NOT `is_from_me`, which is the linked-account flag, not the bot flag). If you designated a main-control group in Phase 0a.1, scope to its v1 chat JID for the primary-DM signal; otherwise rank across all chats:
    ```sql
-   -- v1: find the main group's jid
-   SELECT jid FROM registered_groups WHERE is_main = 1;
-   -- v1: top non-bot senders in that chat
+   -- v1: top non-bot human senders (optionally AND chat_jid = '<main_control_jid>')
    SELECT sender, sender_name, COUNT(*) AS n
    FROM messages
-   WHERE chat_jid = '<main_jid>' AND is_from_me = 0 AND sender IS NOT NULL
+   WHERE is_bot_message = 0 AND sender IS NOT NULL
    GROUP BY sender ORDER BY n DESC LIMIT 5;
    ```
    Use `parseJid` + `v2PlatformId` from `setup/migrate-v2/shared.ts` to convert each `sender` to a v2 user ID (`<channel_type>:<platform_id>`). Present the top 5 via `AskUserQuestion`: "Which of these is you?" with a "let me type it" escape. Once confirmed, upsert into `users(id, kind, display_name)` and proceed to step 5 to grant the owner role. If v1's `messages` table is also empty (fresh v1 install with zero traffic), only then fall back to "ask the user to send a test message first."
@@ -142,10 +140,12 @@ Present the options via `AskUserQuestion`:
 If the user picks option 2 or 3, seed the known users from v1's message history. The v1 database is at `<handoff.v1_path>/store/messages.db`. It has a `messages` table with `sender` and `sender_name` columns. For each group:
 
 ```sql
--- v1: unique senders per chat (excluding bot messages)
+-- v1: unique non-bot human senders per chat. Filter on is_bot_message (the
+-- bot-reply flag), NOT is_from_me (the linked-account flag) — is_from_me=0
+-- drops every human message in chats the bot sent from the same account.
 SELECT DISTINCT sender, sender_name
 FROM messages
-WHERE chat_jid = '<v1_jid>' AND is_from_me = 0 AND sender IS NOT NULL
+WHERE chat_jid = '<v1_jid>' AND is_bot_message = 0 AND sender IS NOT NULL
 ```
 
 The `sender` value is a platform handle (e.g. `6037840640` for Telegram). Build the v2 user ID by inferring the channel type from the chat JID prefix (use `parseJid` from `setup/migrate-v2/shared.ts`) and combining: `<channel_type>:<sender>`.
@@ -210,7 +210,7 @@ const taskflowTpl = fs.existsSync(taskflowTplPath) ? fs.readFileSync(taskflowTpl
 For each `groups/<folder>/CLAUDE.local.md`:
 
 1. Strip the leading identity block (`# Name` heading + first paragraph) and normalize whitespace + template tokens (`{{ASSISTANT_NAME}}` etc.).
-2. Pick the closest-matching template by content (not by line count alone — TaskFlow templates can balloon to 1300+ lines after population). Folders ending in `-taskflow` almost always derive from the taskflow template; `is_main=1` in v1's `registered_groups` indicates main; everything else is usually global.
+2. Pick the closest-matching template by content (not by line count alone — TaskFlow templates can balloon to 1300+ lines after population). Folders ending in `-taskflow` almost always derive from the taskflow template; the folder literally named `main` derives from the main template (do NOT rely on `registered_groups.is_main` — v1 never sets it); everything else is usually global.
 3. Bucket against that template:
 
 - **identity-only** — stripped-and-normalized file equals the stripped-and-normalized template.
@@ -236,7 +236,7 @@ For each file in this bucket:
 1. Read the file.
 2. Use the closest-matching template you already selected for this file in Step 0 — including the `add-taskflow` template if that's what the file derives from. Don't re-derive: a TaskFlow-derived file diffed against `groups/main/CLAUDE.md` will look entirely custom because the templates have nothing in common. The valid sources are:
    - `<v1_path>/.claude/skills/add-taskflow/templates/CLAUDE.md.template` (most likely for `-taskflow` folders)
-   - `<v1_path>/groups/main/CLAUDE.md` (if `is_main=1` in v1's `registered_groups`)
+   - `<v1_path>/groups/main/CLAUDE.md` (for the folder literally named `main` — do NOT key off `registered_groups.is_main`, which v1 never sets)
    - `<v1_path>/groups/global/CLAUDE.md` (otherwise)
 3. Diff the file against the template. Identify sections that are:
    - **Stock boilerplate** (identical to template) — remove. v2's fragments cover this.
