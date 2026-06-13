@@ -821,6 +821,49 @@ export function normalizePhone(phone: string): string {
 }
 
 /**
+ * RC5 — Brazilian mobile 9th-digit equivalence (container-only; used by
+ * actor-person-resolution to match an inbound WhatsApp JID against an
+ * operator-entered board_people.phone). A BR mobile is the same human whether
+ * stored with the mandatory leading '9' on the subscriber (13-digit:
+ * 55 + DDD + 9 + 8 digits) or without it (12-digit, the form many WhatsApp JIDs
+ * and operator entries still carry). Returns the set of canonical forms
+ * equivalent to `phone` so a 12-digit stored phone matches a 13-digit WhatsApp
+ * JID of the same person and vice-versa. Non-BR / non-mobile inputs yield only
+ * their own canonical form.
+ *
+ * Only MOBILE subscribers carry the 9th digit. A landline (subscriber starting
+ * 2–5) must NOT get a spurious mobile variant: an unregistered landline sender
+ * whose 9-inserted form collides with a DIFFERENT registered mobile would
+ * resolve to exactly one (wrong) person — a mis-attribution, not a fail-closed
+ * denial. So variants are gated on the mobile shape: a 12-digit mobile
+ * subscriber is `[6-9]` + 7 digits; the 13-digit form prepends the mandatory 9
+ * (`9[6-9]` + 7 digits). Non-mobile / non-BR inputs yield only their own form.
+ */
+// Conservative-by-design: reconcile ONLY numbers from the 2012 9th-digit
+// migration — old 8-digit mobiles started 6–9, so the migrated 13-digit form is
+// 9 + [6-9] + 7 digits and its 9-less twin is [6-9] + 7 digits. These are the
+// only numbers that have BOTH a 12- and 13-digit representation. Natively-9-digit
+// mobiles (9[1-5]…, allocated after the migration) never had an 8-digit form, so
+// they need no reconciliation; widening to them would reintroduce landline
+// ambiguity (landlines start 2–5) — the BLOCKER this gate exists to prevent.
+const BR_MOBILE_13 = /^9[6-9]\d{7}$/;
+const BR_MOBILE_12 = /^[6-9]\d{7}$/;
+
+export function brPhoneMatchVariants(phone: string): string[] {
+  const c = normalizePhone(phone);
+  if (!c.startsWith('55')) return c ? [c] : [];
+  const ddd = c.slice(2, 4);
+  const sub = c.slice(4);
+  const variants = new Set<string>([c]);
+  if (BR_MOBILE_13.test(sub)) {
+    variants.add('55' + ddd + sub.slice(1)); // 13-digit mobile → 9-less 12-digit
+  } else if (BR_MOBILE_12.test(sub)) {
+    variants.add('55' + ddd + '9' + sub); // 12-digit mobile → 9-prefixed 13-digit
+  }
+  return [...variants];
+}
+
+/**
  * Mask a phone number for agent-facing display — returns last-4 digits
  * prefixed with bullets, or null for null input. Used so
  * `find_person_in_organization` can disambiguate homonyms without leaking

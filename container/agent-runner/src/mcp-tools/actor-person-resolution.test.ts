@@ -60,6 +60,37 @@ describe('resolveAuthenticatedSenderPerson', () => {
     expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567@s.whatsapp.net', db)?.personId).toBe('ana');
   });
 
+  it('RC5: stored 12-digit (no 9th digit) matches an inbound 13-digit WhatsApp JID', () => {
+    // Operator stored the 9-less form; WhatsApp delivers the canonical 13-digit
+    // JID. They are the same human and must resolve, not fail closed.
+    const db = seed([{ id: 'cris', name: 'Cris Alves', phone: '558681234567' }]);
+    expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567@s.whatsapp.net', db)?.personId).toBe('cris');
+  });
+
+  it('RC5: stored 13-digit matches an inbound 12-digit WhatsApp JID', () => {
+    const db = seed([{ id: 'cris', name: 'Cris Alves', phone: '5586981234567' }]);
+    expect(resolveAuthenticatedSenderPerson(BOARD, '558681234567@s.whatsapp.net', db)?.personId).toBe('cris');
+  });
+
+  it('RC5: a landline-shaped inbound number does NOT mis-attribute to a different registered mobile', () => {
+    // Codex BLOCKER: a landline subscriber (starts 2–5) must not get a spurious
+    // mobile 9-inserted variant. Inbound landline 558532345678 is unregistered;
+    // a DIFFERENT person holds the 9-inserted mobile 5585932345678. The widened
+    // match must stay null (fail-closed), never resolve to the wrong person.
+    const db = seed([{ id: 'other', name: 'Outra Pessoa', phone: '5585932345678' }]);
+    expect(resolveAuthenticatedSenderPerson(BOARD, '558532345678@s.whatsapp.net', db)).toBeNull();
+  });
+
+  it('RC5: stays fail-closed when both 9th-digit forms of one number map to two people', () => {
+    // The widened match must not silently pick one when the 12- and 13-digit
+    // forms of the same number are registered to two different people.
+    const db = seed([
+      { id: 'a', name: 'Pessoa A', phone: '558681234567' },
+      { id: 'b', name: 'Pessoa B', phone: '5586981234567' },
+    ]);
+    expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567@s.whatsapp.net', db)).toBeNull();
+  });
+
   it('keeps the existing exact person_id / name resolution (chat-sdk display-name senders)', () => {
     const db = seed([{ id: 'bob', name: 'Roberto Lima', phone: '5586981234567' }]);
     expect(resolveAuthenticatedSenderPerson(BOARD, 'bob', db)?.personId).toBe('bob');

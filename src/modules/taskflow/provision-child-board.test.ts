@@ -235,12 +235,21 @@ describe('handleProvisionChildBoard', () => {
       .run('board-eng-taskflow', 'p-002', 'Laizys Costa', '5585999992345', 'developer');
     dbSeed.close();
 
+    // RC5: force the string-built fallback to a WRONG JID so this asserts the
+    // participant comes from the authoritative onWhatsApp() round-trip
+    // (lookupPhoneJid), not the 9th-digit-unaware string concat.
+    (mockWhatsAppAdapter!.resolvePhoneJid as ReturnType<typeof vi.fn>).mockResolvedValue(
+      'wrong-9th-digit@s.whatsapp.net',
+    );
+
     const { handleProvisionChildBoard } = await import('./provision-child-board.js');
     await handleProvisionChildBoard(validInput, parentSession, {} as never);
 
     expect(mockWhatsAppAdapter!.createGroup).toHaveBeenCalledOnce();
     const createCall = (mockWhatsAppAdapter!.createGroup as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(createCall[0]).toBe('Laizys Costa - TaskFlow');
+    // participant JID is the round-trip-resolved canonical, never the fallback.
+    expect(createCall[1]).toEqual(['5585999992345@s.whatsapp.net']);
 
     const child = readChildBoard('board-ux-setd-secti-taskflow') as
       | (Record<string, unknown> & {
@@ -543,6 +552,52 @@ describe('handleProvisionChildBoard', () => {
       .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND name = ?')
       .get('board-eng-taskflow', 'Laizys Costa') as { person_id: string };
     expect(unifiedPerson.person_id).toBe('p-different-id');
+    const reg = dbAfter
+      .prepare('SELECT child_board_id FROM child_board_registrations WHERE parent_board_id = ?')
+      .get('board-eng-taskflow') as { child_board_id: string };
+    expect(reg.child_board_id).toBe('board-elsewhere');
+    dbAfter.close();
+  });
+
+  it('RC5: cross-parent link matches across the BR 9th-digit split (stored 12-digit, new 13-digit)', async () => {
+    // Codex IMPORTANT: the existing board stored the 9-less 12-digit form; the
+    // new registration (validInput) is 13-digit. Exact match would MISS and mint
+    // a DUPLICATE board (RC4 regression). The variant-set match must LINK instead.
+    seedParentBoard();
+    const db = initTaskflowDb(sharedState.tfDbPath);
+    db.prepare(
+      `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES ('board-other-parent', '120363444@g.us', 'other-parent', 'hierarchy', 0, 3, NULL, 'OTH')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code, owner_person_id)
+         VALUES ('board-elsewhere', '120363555@g.us', 'elsewhere', 'hierarchy', 1, 3, 'board-other-parent', 'EX', 'p-different-id')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)`,
+    ).run('board-other-parent', 'p-different-id', 'board-elsewhere');
+    // Stored 12-digit (no 9th digit); new registration is +5585999992345 (13-digit).
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)`).run(
+      'board-elsewhere',
+      'p-different-id',
+      'Laizys Costa',
+      '558599992345',
+      'developer',
+    );
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)`).run(
+      'board-eng-taskflow',
+      'p-002',
+      'Laizys Costa',
+      '558599992345',
+      'developer',
+    );
+    db.close();
+
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+
+    expect(mockWhatsAppAdapter!.createGroup).not.toHaveBeenCalled(); // linked, not duplicated
+    const dbAfter = new Database(sharedState.tfDbPath);
     const reg = dbAfter
       .prepare('SELECT child_board_id FROM child_board_registrations WHERE parent_board_id = ?')
       .get('board-eng-taskflow') as { child_board_id: string };

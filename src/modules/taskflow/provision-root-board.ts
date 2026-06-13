@@ -10,7 +10,7 @@ import { ensureContainerConfig, updateContainerConfigScalars } from '../../db/co
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
-import { normalizePhone, phoneToWhatsAppJid } from '../../phone.js';
+import { normalizePhone } from '../../phone.js';
 import type { Session } from '../../types.js';
 import { checkMainControlSession } from './permission.js';
 import {
@@ -21,6 +21,7 @@ import {
   markWelcomeSent,
   PARTICIPANT_JID_PATTERN,
   pickUniqueAgentFolder,
+  resolveParticipantJid,
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
@@ -212,7 +213,16 @@ export async function handleProvisionRootBoard(
       return;
     }
 
-    const allParticipants = new Set<string>([phoneToWhatsAppJid(parsed.personPhone), ...parsed.participants]);
+    // RC5: resolve via WhatsApp's onWhatsApp() round-trip so the BR mobile
+    // 9th-digit form matches the server's canonical JID (a string-built JID
+    // with the wrong form is silently dropped, leaving the manager off the new
+    // board). Falls back to the string-built JID when unreachable.
+    const personJid = await resolveParticipantJid(adapter, parsed.personPhone);
+    // parsed.participants are already-validated full JIDs (PARTICIPANT_JID_PATTERN,
+    // platform-canonical) — not raw phones — so they are not re-resolved here. If
+    // a future caller starts passing operator-typed phones, route them through
+    // resolveParticipantJid too (the same RC5 9th-digit drop would otherwise apply).
+    const allParticipants = new Set<string>([personJid, ...parsed.participants]);
 
     let groupJid: string;
     try {

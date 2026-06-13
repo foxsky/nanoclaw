@@ -24,7 +24,7 @@
 import type { Database } from 'bun:sqlite';
 
 import { getTaskflowDb } from '../db/connection.js';
-import { normalizePhone } from '../taskflow-engine.js';
+import { brPhoneMatchVariants, normalizePhone } from '../taskflow-engine.js';
 
 /**
  * A host-authenticated WhatsApp PHONE JID: `<digits>(:device)@s.whatsapp.net`.
@@ -64,13 +64,18 @@ export function resolveAuthenticatedSenderPerson(
     const digits = sender.split('@')[0].split(':')[0];
     const want = normalizePhone(digits);
     if (!want) return null;
+    // RC5: an inbound WhatsApp mobile JID and the stored phone may differ only
+    // in the BR mobile 9th digit (12- vs 13-digit form of the same person).
+    // Match against the equivalence set; the exactly-one-match guard below stays
+    // fail-closed on any ambiguity a wider match could introduce.
+    const wantVariants = new Set(brPhoneMatchVariants(digits));
     const rows = handle
       .prepare(
         `SELECT person_id, name, phone FROM board_people
          WHERE board_id = ? AND phone IS NOT NULL AND phone != ''`,
       )
       .all(boardId) as Array<{ person_id: string; name: string; phone: string }>;
-    const matches = rows.filter((r) => normalizePhone(String(r.phone)) === want);
+    const matches = rows.filter((r) => wantVariants.has(normalizePhone(String(r.phone))));
     if (matches.length !== 1) return null;
     return { personId: matches[0].person_id, name: matches[0].name };
   } catch {

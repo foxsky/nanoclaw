@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import { TaskflowEngine, maskPhoneForDisplay, normalizePhone } from './taskflow-engine.js';
+import { TaskflowEngine, brPhoneMatchVariants, maskPhoneForDisplay, normalizePhone } from './taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
 
@@ -8169,6 +8169,41 @@ describe('normalizePhone parity with host src/phone.ts', () => {
       expect(normalizePhone(input)).toBe(expected);
     });
   }
+});
+
+describe('brPhoneMatchVariants (RC5 — BR mobile 9th-digit equivalence)', () => {
+  const set = (p: string) => new Set(brPhoneMatchVariants(p));
+
+  it('13-digit mobile yields both the 13- and 9-less 12-digit forms', () => {
+    expect(set('5586981234567')).toEqual(new Set(['5586981234567', '558681234567']));
+  });
+
+  it('12-digit yields both the 12- and 9-prefixed 13-digit forms', () => {
+    expect(set('558681234567')).toEqual(new Set(['558681234567', '5586981234567']));
+  });
+
+  it('the two forms of one number produce overlapping variant sets (so they match)', () => {
+    const a = set('5586981234567');
+    const b = set('558681234567');
+    expect([...a].some((v) => b.has(v))).toBe(true);
+  });
+
+  it('accepts BR-local input (canonicalizes via normalizePhone first)', () => {
+    // 11-digit local → 13-digit canonical, then both 9th-digit forms.
+    expect(set('86981234567')).toEqual(new Set(['5586981234567', '558681234567']));
+  });
+
+  it('non-BR / non-mobile inputs yield only their own canonical form', () => {
+    expect(brPhoneMatchVariants('442079460958')).toEqual(['442079460958']);
+    expect(brPhoneMatchVariants('')).toEqual([]);
+  });
+
+  it('a BR landline (subscriber starts 2–5) yields NO 9th-digit variant', () => {
+    // Codex BLOCKER: inserting a 9 into a landline could collide with a real
+    // mobile and mis-attribute. Landlines must stay single-form.
+    expect(brPhoneMatchVariants('558532345678')).toEqual(['558532345678']); // 12-digit landline
+    expect(brPhoneMatchVariants('5585532345678')).toEqual(['5585532345678']); // 13-digit, 2nd digit 5 → not mobile
+  });
 });
 
 describe('resolveColumnMoveAction (drag-to-column → state-machine action)', () => {

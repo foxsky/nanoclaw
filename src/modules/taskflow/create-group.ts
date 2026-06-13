@@ -6,7 +6,13 @@ import { getAgentGroup } from '../../db/agent-groups.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
-import { findBoardByFolder, PARTICIPANT_JID_PATTERN, TASKFLOW_DB_PATH, TASKFLOW_SUFFIX } from './provision-shared.js';
+import {
+  findBoardByFolder,
+  PARTICIPANT_JID_PATTERN,
+  resolveParticipantJid,
+  TASKFLOW_DB_PATH,
+  TASKFLOW_SUFFIX,
+} from './provision-shared.js';
 import { nonEmptyString } from './util.js';
 
 const MAX_GROUP_SUBJECT_LENGTH = 100;
@@ -97,12 +103,13 @@ export async function handleCreateGroup(
     }
 
     let resolved = participants;
-    if (adapter.resolvePhoneJid) {
+    if (adapter.lookupPhoneJid || adapter.resolvePhoneJid) {
+      // RC5: resolve each participant through the onWhatsApp() round-trip
+      // (resolveParticipantJid) so the BR mobile 9th-digit form matches the
+      // server's canonical JID — a string-built JID with the wrong form is
+      // silently dropped by groupCreate.
       const resolvedAll = await Promise.all(
-        participants.map(async (jid) => {
-          const phone = jid.replace(/@s\.whatsapp\.net$/, '');
-          return adapter.resolvePhoneJid!(phone);
-        }),
+        participants.map((jid) => resolveParticipantJid(adapter, jid.replace(/@s\.whatsapp\.net$/, ''))),
       );
       // Two distinct input JIDs can resolve to the same canonical JID (phone-
       // number migration on WhatsApp, aliased numbers). groupCreate rejects or

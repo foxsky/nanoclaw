@@ -11,6 +11,7 @@ import { getDb } from '../../db/connection.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
 import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
 import { isValidGroupFolder } from '../../group-folder.js';
+import { phoneToWhatsAppJid } from '../../phone.js';
 import { migrateBoardClaudeMd } from './migrate-board-claudemd.js';
 import { insertTask } from '../scheduling/db.js';
 import { log } from '../../log.js';
@@ -521,6 +522,32 @@ export function fixOwnership(...paths: string[]): void {
   } catch {
     // Best-effort
   }
+}
+
+/**
+ * Resolve a registered person's phone to the JID WhatsApp will actually accept.
+ *
+ * RC5 (Brazilian mobile 9th-digit ambiguity): an operator-entered phone may be
+ * the 12-digit form (55 + DDD + 8-digit subscriber) while WhatsApp's canonical
+ * JID is the 13-digit form (… + leading 9), or vice-versa. A string-built JID
+ * (`<digits>@s.whatsapp.net`) using the wrong form is silently dropped by
+ * groupCreate — the person never lands in the new board. So prefer the
+ * authoritative `onWhatsApp()` round-trip (`lookupPhoneJid`), which returns the
+ * server-canonical JID; fall back to the string-built JID only when the number
+ * is unreachable on WhatsApp or the adapter lacks the capability (preserving
+ * prior behavior for non-WhatsApp / degraded paths).
+ */
+export async function resolveParticipantJid(adapter: ChannelAdapter, phone: string): Promise<string> {
+  if (adapter.lookupPhoneJid) {
+    try {
+      const jid = await adapter.lookupPhoneJid(phone);
+      if (jid) return jid;
+    } catch (err) {
+      log.warn('resolveParticipantJid: lookupPhoneJid failed; falling back to string-built JID', { err });
+    }
+  }
+  if (adapter.resolvePhoneJid) return adapter.resolvePhoneJid(phone);
+  return phoneToWhatsAppJid(phone);
 }
 
 /**

@@ -13,7 +13,7 @@ import { getDb as getCentralDb } from '../../db/connection.js';
 import { hasTable } from '../../db/connection.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
-import { normalizePhone } from '../../phone.js';
+import { brPhoneMatchVariants, normalizePhone } from '../../phone.js';
 import type { Session } from '../../types.js';
 import {
   buildChildWelcomeMessage,
@@ -22,6 +22,7 @@ import {
   fixOwnership,
   markWelcomeSent,
   pickUniqueAgentFolder,
+  resolveParticipantJid,
   sanitizeFolder,
   ensureSessionInbound,
   findBoardByFolder,
@@ -149,7 +150,19 @@ function findExistingBoardElsewhere(
 ): ExistingBoardMatch | null {
   if (canonicalPhone.length < 10) return null;
   const rows = tfDb.prepare(CROSS_PARENT_LOOKUP_SQL).all(personId, parentBoardId) as ExistingBoardMatch[];
-  return rows.find((c) => normalizePhone(c.phone) === canonicalPhone) ?? null;
+  // RC5: match against the BR 9th-digit variant set so a board stored under the
+  // 12-digit form is still found when this registration is 13-digit (or vice
+  // versa) — otherwise we mint a DUPLICATE board instead of linking the existing
+  // one (RC4 regression). The same-person_id row wins unambiguously; a phone-only
+  // match that resolves to more than one distinct board is ambiguous → fail
+  // closed (don't link the wrong board; fall through to creating a fresh one).
+  const variants = new Set(brPhoneMatchVariants(canonicalPhone));
+  const matches = rows.filter((c) => variants.has(normalizePhone(c.phone)));
+  const byId = matches.find((c) => c.person_id === personId);
+  if (byId) return byId;
+  const distinctBoards = new Set(matches.map((c) => c.child_board_id));
+  if (distinctBoards.size !== 1) return null;
+  return matches[0];
 }
 
 /**
@@ -457,11 +470,11 @@ export async function handleProvisionChildBoard(
 
     let createResult: Awaited<ReturnType<NonNullable<typeof adapter.createGroup>>>;
     try {
-      // v1 child fallback used the raw personPhone when canonicalize-empty
-      // (e.g. non-digit input); preserve that semantic so behavior matches v1.
-      const participantJid = adapter.resolvePhoneJid
-        ? await adapter.resolvePhoneJid(parsed.personPhone)
-        : `${parsed.canonicalPhone || parsed.personPhone}@s.whatsapp.net`;
+      // RC5: resolve via WhatsApp's onWhatsApp() round-trip so the BR mobile
+      // 9th-digit form matches the server's canonical JID (a string-built JID
+      // with the wrong form is silently dropped, leaving the person off the
+      // new board). Falls back to the string-built JID when unreachable.
+      const participantJid = await resolveParticipantJid(adapter, parsed.personPhone);
       createResult = await adapter.createGroup(childGroupName, [participantJid]);
       log.info('provision_child_board: WhatsApp group created', {
         jid: createResult.jid,

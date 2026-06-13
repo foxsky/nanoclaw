@@ -15,6 +15,7 @@ import {
   nextCronRun,
   ONBOARDING_FILES,
   REVIEW_PROMPT,
+  resolveParticipantJid,
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
@@ -22,6 +23,7 @@ import {
   STANDUP_PROMPT,
   uniqueFolder,
 } from './provision-shared.js';
+import type { ChannelAdapter } from '../../channels/adapter.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-provision-shared-test-${process.pid}`);
 
@@ -599,5 +601,45 @@ describe('seedBoardCore', () => {
     expect(board.hierarchy_level).toBe(0);
     expect(board.parent_board_id).toBeNull();
     expect(board.owner_person_id).toBeNull();
+  });
+});
+
+describe('resolveParticipantJid (RC5 — BR 9th-digit reconciliation)', () => {
+  // The stored phone is the 12-digit form; WhatsApp's canonical JID is the
+  // 13-digit form. The round-trip MUST win so the participant is not dropped.
+  const STORED = '558599992345'; // 12-digit
+  const CANONICAL_JID = '5585999992345@s.whatsapp.net'; // 13-digit, from WhatsApp
+
+  it('prefers the onWhatsApp() round-trip JID over the string-built one', async () => {
+    const adapter = {
+      lookupPhoneJid: vi.fn(async () => CANONICAL_JID),
+      resolvePhoneJid: vi.fn(async (p: string) => `${p.replace(/\D/g, '')}@s.whatsapp.net`),
+    } as unknown as ChannelAdapter;
+    expect(await resolveParticipantJid(adapter, STORED)).toBe(CANONICAL_JID);
+    expect(adapter.resolvePhoneJid).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the string-built JID when the number is not on WhatsApp', async () => {
+    const adapter = {
+      lookupPhoneJid: vi.fn(async () => null),
+      resolvePhoneJid: vi.fn(async (p: string) => `${p.replace(/\D/g, '')}@s.whatsapp.net`),
+    } as unknown as ChannelAdapter;
+    expect(await resolveParticipantJid(adapter, STORED)).toBe(`${STORED}@s.whatsapp.net`);
+  });
+
+  it('falls back to the string-built JID when the round-trip throws', async () => {
+    const adapter = {
+      lookupPhoneJid: vi.fn(async () => {
+        throw new Error('socket down');
+      }),
+      resolvePhoneJid: vi.fn(async (p: string) => `${p.replace(/\D/g, '')}@s.whatsapp.net`),
+    } as unknown as ChannelAdapter;
+    expect(await resolveParticipantJid(adapter, STORED)).toBe(`${STORED}@s.whatsapp.net`);
+  });
+
+  it('falls back to phoneToWhatsAppJid when the adapter lacks both capabilities', async () => {
+    const adapter = {} as unknown as ChannelAdapter;
+    // phoneToWhatsAppJid canonicalizes the 10/11-digit local form by prepending 55.
+    expect(await resolveParticipantJid(adapter, STORED)).toBe(`${STORED}@s.whatsapp.net`);
   });
 });

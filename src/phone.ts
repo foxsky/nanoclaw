@@ -41,6 +41,37 @@ export function normalizePhone(phone: string): string {
 }
 
 /**
+ * RC5 — Brazilian mobile 9th-digit equivalence. Mirrors the container copy in
+ * `container/agent-runner/src/taskflow-engine.ts` (both must stay in sync). A BR
+ * mobile is the same human whether stored with the mandatory leading '9' on the
+ * subscriber (13-digit) or without it (12-digit). Returns the set of canonical
+ * forms equivalent to `phone` so the two forms match. Only MOBILE subscribers
+ * carry the 9th digit — a landline (subscriber starting 2–5) yields only its own
+ * form, so a 9-inserted variant can never collide with a real mobile.
+ */
+// Conservative-by-design: reconcile ONLY post-2012-migration numbers (old
+// 8-digit mobiles started 6–9 → migrated 13-digit is 9 + [6-9] + 7 digits, with
+// a 9-less 12-digit twin). Natively-9-digit mobiles (9[1-5]…) never had an
+// 8-digit form, so they need no reconciliation; widening to them would let a
+// 9-inserted variant collide with a landline (landlines start 2–5).
+const BR_MOBILE_13 = /^9[6-9]\d{7}$/;
+const BR_MOBILE_12 = /^[6-9]\d{7}$/;
+
+export function brPhoneMatchVariants(phone: string): string[] {
+  const c = normalizePhone(phone);
+  if (!c.startsWith('55')) return c ? [c] : [];
+  const ddd = c.slice(2, 4);
+  const sub = c.slice(4);
+  const variants = new Set<string>([c]);
+  if (BR_MOBILE_13.test(sub)) {
+    variants.add('55' + ddd + sub.slice(1));
+  } else if (BR_MOBILE_12.test(sub)) {
+    variants.add('55' + ddd + '9' + sub);
+  }
+  return [...variants];
+}
+
+/**
  * Compose the canonical `<digits>@s.whatsapp.net` JID without round-tripping
  * to the platform. For verified-on-WhatsApp lookups, use the channel
  * adapter's `lookupPhoneJid` (network call).
