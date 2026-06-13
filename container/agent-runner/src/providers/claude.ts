@@ -209,10 +209,12 @@ export const preToolUseHook: HookCallback = async (input) => {
  * request body invalid JSON (400 "no low surrogate in string"). We only rewrite
  * when a lone surrogate is actually present, so well-formed output is untouched.
  *
- * Residual: only the SUCCESS path (`tool_response`) is rewritable —
+ * Residual: only the SUCCESS path (`tool_response`) is rewritable here —
  * PostToolUseFailure carries an `error` string with no `updatedToolOutput`
- * field, so a malformed error message from a failed built-in/external tool
- * can't be sanitized here (hard SDK limit; narrow).
+ * field. Our own in-container MCP tools sanitize their thrown message at the
+ * dispatch boundary (`wellFormedError` in mcp-tools/server.ts), so the residual
+ * is narrowed to a built-in/external tool that FAILS with malformed error text
+ * (those run in the SDK process — unreachable from here; hard SDK limit).
  */
 export const postToolUseHook: HookCallback = async (input) => {
   try {

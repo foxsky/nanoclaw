@@ -13,7 +13,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import type { McpToolDefinition } from './types.js';
-import { wellFormedToolResult } from '../well-formed.js';
+import { wellFormedError, wellFormedToolResult } from '../well-formed.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -92,7 +92,15 @@ export async function startMcpServer(
         });
       }
     }
-    return wellFormedToolResult(await tool.handler(args ?? {}));
+    // A handler that THROWS bypasses wellFormedToolResult: the error propagates
+    // and the SDK records it (PostToolUseFailure has no output-rewrite hook), so
+    // a lone surrogate in the message would poison the next request. Sanitize
+    // the thrown message here — the only reachable point for our own tools.
+    try {
+      return wellFormedToolResult(await tool.handler(args ?? {}));
+    } catch (err) {
+      throw wellFormedError(err);
+    }
   });
 
   const transport = new StdioServerTransport();

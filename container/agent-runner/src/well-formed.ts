@@ -80,11 +80,39 @@ export function containsLoneSurrogate(value: unknown): boolean {
  *
  * Reaches external/config-wired MCP and built-in SDK tool output too: the
  * PostToolUse hook (providers/claude.ts) routes every SUCCESSFUL tool_response
- * through this. The one residual is a tool FAILURE — PostToolUseFailure carries
- * an `error` string with no `updatedToolOutput` field, so a lone surrogate in a
- * built-in/external tool's error message can't be rewritten in-repo (hard SDK
- * limit; narrow — requires a tool to fail AND its error text to be malformed).
+ * through this. Tool FAILURES are partly covered: our own in-container MCP
+ * tools route their thrown message through `wellFormedError` at the dispatch
+ * boundary (mcp-tools/server.ts). The residual is a built-in/external tool that
+ * FAILS — PostToolUseFailure carries an `error` string with no
+ * `updatedToolOutput` field and those tools run in the SDK process, so a lone
+ * surrogate in their error text can't be rewritten in-repo (hard SDK limit;
+ * narrow — requires such a tool to fail AND its error text to be malformed).
  */
+/**
+ * Sanitize lone surrogates out of a THROWN error's message so it can't poison
+ * the next request body. When a tool's handler throws (vs. returning a result),
+ * `wellFormedToolResult` never runs — the error propagates and the SDK records
+ * it (e.g. via PostToolUseFailure, which exposes no `updatedToolOutput`). For
+ * our own in-container MCP tools this is the only reachable sanitization point;
+ * call it at the dispatch boundary: `throw wellFormedError(err)`.
+ *
+ * Returns the ORIGINAL error untouched on the common (well-formed) path so the
+ * stack/type is preserved; only allocates a sanitized copy when needed.
+ * Built-in/external tool failures run in the SDK process and stay unreachable.
+ */
+export function wellFormedError(err: unknown): unknown {
+  if (err instanceof Error) {
+    if (isWellFormedText(err.message)) return err;
+    const sanitized = new Error(toWellFormedText(err.message));
+    if (typeof err.stack === 'string') sanitized.stack = toWellFormedText(err.stack);
+    return sanitized;
+  }
+  if (typeof err === 'string') {
+    return isWellFormedText(err) ? err : new Error(toWellFormedText(err));
+  }
+  return err;
+}
+
 export function wellFormedToolResult<T>(value: T): T {
   if (typeof value === 'string') return toWellFormedText(value) as unknown as T;
   if (Array.isArray(value)) return value.map((v) => wellFormedToolResult(v)) as unknown as T;

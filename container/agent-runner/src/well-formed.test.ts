@@ -6,6 +6,7 @@ import {
   toWellFormedText,
   truncateChars,
   truncateCharsTail,
+  wellFormedError,
   wellFormedToolResult,
 } from './well-formed.ts';
 
@@ -113,5 +114,35 @@ describe('wellFormedToolResult (recursive deep-sanitize)', () => {
   it('leaves well-formed content untouched (value-equal)', () => {
     const result = { content: [{ type: 'text', text: 'ok 👋' }] };
     expect(wellFormedToolResult(result)).toEqual(result);
+  });
+});
+
+// A thrown error message echoing malformed user/DB text propagates out of our
+// MCP tool dispatch and is recorded by the SDK (PostToolUseFailure has no
+// output-rewrite hook) — so a lone surrogate in the message would poison the
+// NEXT request body. wellFormedError sanitizes the thrown message at our
+// dispatch boundary (the reachable portion of that failure path).
+describe('wellFormedError', () => {
+  it('sanitizes a lone surrogate in the thrown Error message', () => {
+    const out = wellFormedError(new Error('task "ab\uD83D" not found'));
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toBe('task "ab�" not found');
+    expect(isWellFormedText((out as Error).message)).toBe(true);
+  });
+
+  it('returns the SAME error instance when the message is well-formed', () => {
+    const err = new Error('clean error 👋');
+    expect(wellFormedError(err)).toBe(err); // no allocation on the common path
+  });
+
+  it('handles a non-Error throw (string) with a lone surrogate', () => {
+    const out = wellFormedError('boom \uDC00');
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toBe('boom �');
+  });
+
+  it('passes a well-formed non-Error throw through unchanged', () => {
+    const thrown = { code: 'E_OK' };
+    expect(wellFormedError(thrown)).toBe(thrown);
   });
 });
