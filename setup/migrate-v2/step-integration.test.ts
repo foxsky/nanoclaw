@@ -243,10 +243,10 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
     expect(r.status).not.toBe(0);
   });
 
-  it('tasks.ts (v1 DB present but no active scheduled tasks)', () => {
+  it('tasks.ts (v1 DB present but no active or paused scheduled tasks)', () => {
     const v1 = v1WithMessagesDb((d) => d.exec(`CREATE TABLE scheduled_tasks (id TEXT, status TEXT)`));
     const r = runStep('tasks.ts', [v1], { cwd: tmp() });
-    expect(r.stdout).toMatch(/SKIPPED:no active tasks/);
+    expect(r.stdout).toMatch(/SKIPPED:no active or paused tasks/);
     expect(r.status).not.toBe(0);
   });
 });
@@ -467,7 +467,7 @@ describe('Guard C: tasks.ts legacy prompt shapes', () => {
 
     const r = runStep('tasks.ts', [v1], { cwd });
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/OK:active=1,migrated=1,skipped=0,failed=0/);
+    expect(r.stdout).toMatch(/OK:migrated=1,paused=0,skipped=0,failed=0/);
 
     const central = new Database(path.join(cwd, 'data', 'v2.db'));
     const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
@@ -483,5 +483,54 @@ describe('Guard C: tasks.ts legacy prompt shapes', () => {
     db.close();
     const content = JSON.parse(row.content) as { prompt: unknown };
     expect(content.prompt).toBe('daily auditor prompt');
+  });
+});
+
+describe('Guard F: tasks.ts migrates paused tasks as paused (F7)', () => {
+  it('carries a paused cron task DORMANT (status=paused), migrates active, drops terminal states', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);
+        CREATE TABLE scheduled_tasks (id TEXT, group_folder TEXT, chat_jid TEXT, prompt TEXT, schedule_type TEXT, schedule_value TEXT, next_run TEXT, status TEXT, context_mode TEXT, script TEXT);
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+      `);
+      const ins = d.prepare(`INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      ins.run('act-1', 'main', 'tg:123', 'active daily', 'cron', '0 8 * * *', '2026-06-12T11:00:00.000Z', 'active', 'recent', null);
+      ins.run('pause-1', 'main', 'tg:123', 'paused daily', 'cron', '0 9 * * *', '2026-06-12T12:00:00.000Z', 'paused', 'recent', null);
+      // Terminal states must NOT migrate.
+      ins.run('done-1', 'main', 'tg:123', 'done once', 'once', '', '2026-01-01T00:00:00.000Z', 'completed', 'recent', null);
+      ins.run('cancel-1', 'main', 'tg:123', 'cancelled', 'cron', '0 10 * * *', '2026-06-12T13:00:00.000Z', 'cancelled', 'recent', null);
+    });
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+
+    const r = runStep('tasks.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/migrated=2/); // active + paused, not the terminal rows
+    expect(r.stdout).toMatch(/paused=1/);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const sessionRoot = path.join(cwd, 'data', 'v2-sessions');
+    const inbound = fs
+      .readdirSync(path.join(sessionRoot, ag.id), { recursive: true })
+      .map((p) => path.join(sessionRoot, ag.id, String(p)))
+      .find((p) => p.endsWith('inbound.db'));
+    expect(inbound).toBeDefined();
+    const db = new Database(inbound!);
+    const statusOf = (id: string) =>
+      (db.prepare("SELECT status FROM messages_in WHERE id = ? AND kind = 'task'").get(id) as
+        | { status: string }
+        | undefined)?.status;
+    const active = statusOf('act-1');
+    const paused = statusOf('pause-1');
+    const done = statusOf('done-1');
+    const cancelled = statusOf('cancel-1');
+    db.close();
+    expect(active).toBe('pending'); // active → live, fires normally
+    expect(paused).toBe('paused'); // F7: paused stays dormant (not auto-resumed)
+    expect(done).toBeUndefined(); // completed/once → dropped
+    expect(cancelled).toBeUndefined(); // cancelled → dropped
   });
 });

@@ -23,7 +23,7 @@ import type Database from 'better-sqlite3';
 import { getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { getAllMessagingGroups } from '../../db/messaging-groups.js';
 import { log } from '../../log.js';
-import { insertTask } from '../scheduling/db.js';
+import { insertTask, pauseTask } from '../scheduling/db.js';
 import { ensureSessionInbound, nextCronRun, taskEnvelope } from './provision-shared.js';
 import { TIMEZONE } from '../../config.js';
 
@@ -113,15 +113,24 @@ export function migrateScheduledTasks(tfDb: Database.Database, resolveInbound: I
         | { 1: number }
         | undefined;
       if (!exists) {
-        insertTask(inboundDb, {
-          id: row.id,
-          processAfter,
-          recurrence,
-          platformId: null,
-          channelType: null,
-          threadId: null,
-          content: taskEnvelope(row.prompt, row.script),
-        });
+        // insertTask hardcodes status='pending'; a source-paused task must stay
+        // DORMANT (operator suspended it) — flip it to paused on FRESH insert
+        // only (the exists-retry path must not re-suspend a task the operator may
+        // have resumed since a prior partial run). Insert + pause as ONE
+        // transaction so a crash between them can't commit a pending row that the
+        // retry then skips, silently un-pausing it.
+        inboundDb.transaction(() => {
+          insertTask(inboundDb, {
+            id: row.id,
+            processAfter,
+            recurrence,
+            platformId: null,
+            channelType: null,
+            threadId: null,
+            content: taskEnvelope(row.prompt, row.script),
+          });
+          if (row.status === 'paused') pauseTask(inboundDb, row.id);
+        })();
       }
       markMigrated.run(row.id);
       result.migrated++;

@@ -304,13 +304,16 @@ fi
 
 # Show what we found
 GROUP_COUNT=$(pnpm exec tsx scripts/q.ts "$V1_DB" "SELECT COUNT(*) FROM registered_groups" 2>/dev/null || echo 0)
+# Active AND paused tasks both migrate (paused stay dormant) — count both so the
+# operator is warned, not surprised, about suspended tasks being carried over.
 TASK_COUNT=$(pnpm exec tsx scripts/q.ts "$V1_DB" "SELECT COUNT(*) FROM scheduled_tasks WHERE status='active'" 2>/dev/null || echo 0)
+PAUSED_COUNT=$(pnpm exec tsx scripts/q.ts "$V1_DB" "SELECT COUNT(*) FROM scheduled_tasks WHERE status='paused'" 2>/dev/null || echo 0)
 ENV_KEYS=0
 if [ -f "$V1_PATH/.env" ]; then
   ENV_KEYS=$(grep -c '=' "$V1_PATH/.env" 2>/dev/null || echo 0)
 fi
 
-step_info "v1 state: $(bold "$GROUP_COUNT") groups, $(bold "$TASK_COUNT") active tasks, $(bold "$ENV_KEYS") env keys"
+step_info "v1 state: $(bold "$GROUP_COUNT") groups, $(bold "$TASK_COUNT") active + $(bold "$PAUSED_COUNT") paused tasks, $(bold "$ENV_KEYS") env keys"
 
 echo
 step_ok "Phase 0 complete — ready to migrate"

@@ -185,6 +185,25 @@ describe('migrateScheduledTasks', () => {
     expect(result.skipped).toBe(2);
   });
 
+  it('migrates a paused row but keeps it DORMANT (status=paused, not auto-resumed)', () => {
+    // Fidelity: a source-paused task was suspended by the operator. insertTask
+    // hardcodes status='pending'; the migrator must flip it back to paused so it
+    // does not silently start firing post-migration.
+    seedRow({ id: 'task-paused', status: 'paused' });
+
+    const result = migrateScheduledTasks(tfDb, () => inboundDb);
+
+    expect(result.migrated).toBe(1);
+    const row = inboundDb.prepare(`SELECT status FROM messages_in WHERE id = ?`).get('task-paused') as
+      | { status: string }
+      | undefined;
+    expect(row?.status).toBe('paused');
+    const src = tfDb.prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`).get('task-paused') as {
+      status: string;
+    };
+    expect(src.status).toBe('migrated');
+  });
+
   it('counts a per-row failure (no inbound resolved) without aborting', () => {
     seedRow({ id: 'task-no-session', group_folder: 'orphan-folder' });
     seedRow({ id: 'task-ok', group_folder: 'test-folder' });

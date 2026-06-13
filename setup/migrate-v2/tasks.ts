@@ -20,7 +20,7 @@ import { initDb, closeDb } from '../../src/db/connection.js';
 import { getAgentGroupByFolder } from '../../src/db/agent-groups.js';
 import { getMessagingGroupByPlatform } from '../../src/db/messaging-groups.js';
 import { runMigrations } from '../../src/db/migrations/index.js';
-import { insertTask } from '../../src/modules/scheduling/db.js';
+import { insertTask, pauseTask } from '../../src/modules/scheduling/db.js';
 import { openInboundDb, resolveSession } from '../../src/session-manager.js';
 import { readEnvFile } from '../../src/env.js';
 import { buildDiscordResolver, type DiscordResolver } from './discord-resolver.js';
@@ -94,10 +94,15 @@ async function main(): Promise<void> {
   const allTasks = v1Db.prepare('SELECT * FROM scheduled_tasks').all() as V1Task[];
   v1Db.close();
 
-  const activeTasks = allTasks.filter((t) => t.status === 'active');
-  if (activeTasks.length === 0) {
+  // Carry both ACTIVE and PAUSED tasks. Paused = user-suspended (resumable),
+  // not deleted — dropping them silently loses recurring tasks the operator
+  // intends to resume. Mirrors the sibling taskflow.db migrator
+  // (src/modules/taskflow/migrate-scheduled-tasks.ts: status IN ('active','paused')).
+  // Terminal states (completed/cancelled) are still dropped below.
+  const tasksToMigrate = allTasks.filter((t) => t.status === 'active' || t.status === 'paused');
+  if (tasksToMigrate.length === 0) {
     // Non-zero so run_step routes to the skipped branch, not silent "success".
-    console.log('SKIPPED:no active tasks');
+    console.log('SKIPPED:no active or paused tasks');
     process.exit(1);
   }
 
@@ -111,18 +116,19 @@ async function main(): Promise<void> {
   runMigrations(v2Db);
 
   let migrated = 0;
+  let pausedMigrated = 0;
   let skipped = 0;
   let failed = 0;
 
   // Mirrors db.ts: Discord platform_id needs API lookup to recover guildId.
   let discordResolver: DiscordResolver | null = null;
-  const hasDiscord = activeTasks.some((t) => parseJid(t.chat_jid)?.channel_type === 'discord');
+  const hasDiscord = tasksToMigrate.some((t) => parseJid(t.chat_jid)?.channel_type === 'discord');
   if (hasDiscord) {
     const env = readEnvFile(['DISCORD_BOT_TOKEN']);
     discordResolver = await buildDiscordResolver(env.DISCORD_BOT_TOKEN ?? '');
   }
 
-  for (const t of activeTasks) {
+  for (const t of tasksToMigrate) {
     try {
       const ag = getAgentGroupByFolder(t.group_folder);
       if (!ag) { skipped++; continue; }
@@ -153,19 +159,30 @@ async function main(): Promise<void> {
           .get(t.id) as { id: string } | undefined;
         if (existing) { skipped++; continue; }
 
-        insertTask(inboxDb, {
-          id: t.id,
-          processAfter: scheduling.processAfter,
-          recurrence: scheduling.recurrence,
-          platformId,
-          channelType: parsed.channel_type,
-          threadId: null,
-          content: JSON.stringify({
-            prompt: normalizePrompt(t.prompt),
-            script: t.script ?? null,
-            migrated_from_v1: { original_id: t.id, context_mode: t.context_mode ?? null },
-          }),
-        });
+        // insertTask hardcodes status='pending'; a v1-paused task must stay
+        // DORMANT (the user suspended it) — flip it to paused so the host sweep
+        // / container poll don't fire it (resumed later via resume_task). Insert
+        // + pause MUST be one transaction: otherwise a crash between them commits
+        // a pending row, and the rerun's existing-row skip (above) leaves the
+        // task wrongly active — silently un-pausing it.
+        const wasPaused = t.status === 'paused';
+        inboxDb.transaction(() => {
+          insertTask(inboxDb, {
+            id: t.id,
+            processAfter: scheduling.processAfter,
+            recurrence: scheduling.recurrence,
+            platformId,
+            channelType: parsed.channel_type,
+            threadId: null,
+            content: JSON.stringify({
+              prompt: normalizePrompt(t.prompt),
+              script: t.script ?? null,
+              migrated_from_v1: { original_id: t.id, context_mode: t.context_mode ?? null },
+            }),
+          });
+          if (wasPaused) pauseTask(inboxDb, t.id);
+        })();
+        if (wasPaused) pausedMigrated++;
         migrated++;
       } finally {
         inboxDb.close();
@@ -177,7 +194,7 @@ async function main(): Promise<void> {
   }
 
   closeDb();
-  console.log(`OK:active=${activeTasks.length},migrated=${migrated},skipped=${skipped},failed=${failed}`);
+  console.log(`OK:migrated=${migrated},paused=${pausedMigrated},skipped=${skipped},failed=${failed}`);
 }
 
 main().catch((err) => {
