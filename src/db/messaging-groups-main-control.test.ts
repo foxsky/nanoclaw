@@ -13,6 +13,7 @@ import { closeDb, getDb, initTestDb } from '../db/index.js';
 import { runMigrations } from './migrations/index.js';
 import {
   createMessagingGroup,
+  createMessagingGroupAgent,
   getMainControlMessagingGroup,
   getMessagingGroup,
   setMainControlMessagingGroup,
@@ -107,5 +108,34 @@ describe('messaging-groups main-control primitives', () => {
     setMainControlMessagingGroup('mg-1');
     setMainControlMessagingGroup('mg-1');
     expect(getMainControlMessagingGroup()?.id).toBe('mg-1');
+  });
+
+  it('always-engages the designated main group’s wired agents (Gap #3: v1 main parity)', () => {
+    seedMg('mg-1', '120363111@g.us');
+    getDb()
+      .prepare(
+        `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at) VALUES ('ag-1', 'Tars', 'main', 'claude', ?)`,
+      )
+      .run(now);
+    // Wire an agent that is NOT always-engage (e.g. a migrated @Tars main).
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '@Tars',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now,
+    });
+
+    setMainControlMessagingGroup('mg-1');
+
+    const mga = getDb()
+      .prepare("SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE id = 'mga-1'")
+      .get() as { engage_mode: string; engage_pattern: string | null };
+    expect(mga).toEqual({ engage_mode: 'pattern', engage_pattern: '.' });
   });
 });

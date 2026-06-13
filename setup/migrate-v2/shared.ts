@@ -217,6 +217,9 @@ export const CHANNEL_AUTH_REGISTRY: Record<string, ChannelAuthSpec> = {
     v1EnvKeys: ['WHATSAPP_PHONE', 'WHATSAPP_OWNER'],
     requiredV2Keys: [],
     candidatePaths: [
+      // The canonical Baileys keystore (whatsapp.ts AUTH_DIR = <cwd>/store/auth).
+      // Must be first — the older guesses below never matched a real install.
+      'store/auth',
       'data/sessions/baileys',
       'data/baileys_auth',
       'store/auth_info_baileys',

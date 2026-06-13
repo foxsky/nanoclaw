@@ -54,6 +54,11 @@ export function getMessagingGroupByPlatform(channelType: string, platformId: str
  *
  * Throws if the target id doesn't exist (fail-closed against typos).
  *
+ * Side effect: also sets the designated group's wired agents to always-engage
+ * (engage_mode='pattern', engage_pattern='.'). The main control group is the
+ * operator's command channel and must answer every message (v1 parity), and the
+ * router ignores is_main_control when deciding engagement.
+ *
  * Designed to be called by:
  *   - Skill bootstrap step (one-time during install).
  *   - Admin command path (operator can re-designate later).
@@ -67,6 +72,15 @@ export function setMainControlMessagingGroup(id: string): void {
     }
     db.prepare('UPDATE messaging_groups SET is_main_control = 0 WHERE is_main_control = 1').run();
     db.prepare('UPDATE messaging_groups SET is_main_control = 1 WHERE id = ?').run(id);
+    // The main control group is the operator's command channel — it must respond
+    // to EVERY message, not just triggered/mentioned ones (v1 parity: the main
+    // group always-engaged). The router gates purely on engage_mode/engage_pattern
+    // and ignores is_main_control, so always-engage its wired agents here. (Agents
+    // wired AFTER designation aren't covered — in the migration/bootstrap flows
+    // wiring precedes designation, so the operator's existing agents are caught.)
+    db.prepare(
+      "UPDATE messaging_group_agents SET engage_mode = 'pattern', engage_pattern = '.' WHERE messaging_group_id = ?",
+    ).run(id);
   })();
 }
 
