@@ -110,9 +110,18 @@ The reply gate (C5) and capability mode (C7) both key on "the current resolved e
 - **Engine:** accepted external + grant on meeting A adds a note (attributed `external_contact`); same external attempts a note on meeting B (no grant) → denied; expired-at-mutation grant → denied; task/board mutation by external → denied.
 - **Reply:** `send_message(to='external-<id>')` for the *current* external → delivers to its cold-DM mg; for a *different* external → broadcast-gated/denied.
 
+## P2 host — BUILT (Codex round-1 reviewed), DARK until P3
+Commits on skill/taskflow-v2: `f81fdb8c` (dup-`direct_chat_jid` fail-closed) · `7c41d351` (shared `ensureColdDmForExternal`→`cold-dm.ts`) · `fc48fe07` (`setUnroutedDmResolver` router hook) · `cc0a4acb` (same-board resolver) · `28b9b8aa` (cross-board parked disambiguation) · `68f2acc4` (Codex round-1 host hardening). Resolver `resolveUnroutedExternalDm` (`external-dm-route.ts`) is **NOT registered** in `modules/taskflow/index.ts` — DARK until P3.
+
+**Codex gpt-5.5/xhigh round 1 (P2 host diff) — fixed:** B1 channel_type guard (whatsapp-only auth); B2 disambiguation keyed on distinct **board_id** not group_jid (`boards.group_jid` non-unique) + routed row carries `externalActor.boardId`; I1 selection parsed against the **shown** parked choices then re-validated vs live grants; I2 `writeDestinations` after dest-create so a live container resolves `from="external-<id>"`.
+
+**Open → P3 scope (from Codex round 1):**
+- **B3 (mixed-batch reply routing).** A *pure* external turn already replies to the external (`extractRouting` takes the batch's first row = the external cold-DM address). But if a board-group message and an external row land in the **same poll batch**, `extractRouting` (first-row-wins) + `originAttr` (`findByRouting(platform_id)`) can cross-contaminate the reply target. P3 must enforce **per-turn routing isolation** as part of "board-person XOR external per turn" — a turn carrying an external row must not share a reply target with board-group rows. (Code comment in `routeExternalIntoBoard`.)
+- **NICE (first-contact inbound).** A non-mention WhatsApp DM with no pre-existing cold-DM mg still returns before the resolver (`router.ts` `!found`/`!isMention`). Acceptable under "inbound = reply after outbound cold-provisioning"; revisit if first-contact-from-a-granted-external inbound is needed.
+
 ## Phasing (multi-session)
 1. **P1 (this doc) — DONE:** design + Codex rounds 1 & 2 → build-ready (B6/B7 + IMPORTANTs incorporated). **One mechanism to settle at P3 start:** the external-safe capability gate (C7 — preferred option (a), tool-level `externalSafeOnly` wrapper).
-2. **P2 host:** unrouted-DM resolver (pre-`!isMention`) + same-board route + cross-board TTL-parked disambiguation (consumed host-side) + reply-dest (collision-safe) + shared cold-DM helper extraction + `resolveExternalDm` dup-`direct_chat_jid` fail-closed. Host-testable.
+2. **P2 host — DONE (DARK, Codex round-1 clean):** unrouted-DM resolver (pre-`!isMention`) + same-board route + cross-board TTL-parked disambiguation (consumed host-side) + reply-dest (collision-safe) + shared cold-DM helper extraction + `resolveExternalDm` dup-`direct_chat_jid` fail-closed. Host-testable.
 3. **P3 container:** `turn-external-actor` channel (with exception-safe turn-boundary clear) + poison-`turn_actor` + deterministic default-deny + **C7 external-safe capability gate (reads/tools)** + chat-surface set + engine per-meeting DB grant re-check at the chat call sites.
 4. **P4:** end-to-end + Codex round-3 security pass + formatter + broadcast-gate exception + the B7 "stale-actor send denied after turn" test.
 
