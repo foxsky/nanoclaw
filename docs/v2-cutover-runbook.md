@@ -38,6 +38,37 @@ Required operator choices:
 - Confirm the `1c-groups` step reports migrated prompts. The migration writes v2 `CLAUDE.local.md` files through `src/modules/taskflow/migrate-board-claudemd.ts`; it must not copy raw v1 `CLAUDE.md` prose unchanged.
 - Accept the v2 switchover only after the script reports successful DB, group, session, scheduled task, TaskFlow DB, and container build steps.
 
+## OneCLI Agent Secret-Mode Flip — REQUIRED before v2 can answer
+
+The v2 container authenticates to Anthropic **only** through the OneCLI gateway — no token in `.env` reaches the container (`container-runner.ts` passes no Anthropic auth env; `agent-runner` runs the SDK with `env:{...process.env}`). The gateway injects `CLAUDE_CODE_OAUTH_TOKEN=placeholder` into the container, the bundled `claude` CLI emits `Authorization: Bearer placeholder`, and the gateway **rewrites** that header with the real vaulted token on the wire. The gateway injects that placeholder **only once the agent has the Anthropic secret effectively assigned** (verified live: an unprovisioned/selective agent's `/api/container-config` returns an empty env — no placeholder, no Bearer header → `401` on every model call).
+
+Auto-created agents start in `selective` secret-mode with **no secrets assigned** (`container-runner.ts` → `onecli.ensureAgent` → `POST /api/agents`). The agent does not exist until the migration spawns the first container, so this **cannot be pre-staged** — it is a mandatory post-spawn step. A board whose agent has not been flipped will silently `401` instead of answering.
+
+**Precondition — the Anthropic credential must already be in the vault.** The migration's `3c-auth` step only *checks*; it does not create the secret. Seed it during OneCLI setup (from the v1 `CLAUDE_CODE_OAUTH_TOKEN`):
+
+```bash
+onecli secrets create --name Anthropic --type anthropic --value <token> --host-pattern api.anthropic.com   # one-time, if not already seeded
+onecli secrets list | grep -i anthropic   # confirm the secret exists before flipping any agent
+```
+
+**Run AFTER a board's first message reaches v2** (that message spawns the container which creates the OneCLI agent), and BEFORE counting that board's canary samples — a `401`'d message is not a valid canary sample.
+
+```bash
+# 1. Find the agent (identifier == the agent_group id):
+onecli agents list
+# 2. Flip it to `all` so every vault secret with a matching host-pattern is injected:
+onecli agents set-secret-mode --id <agent-id> --mode all
+#    (narrower alternative — stay selective but assign only the Anthropic secret:
+#       onecli secrets list                                          # find the Anthropic secret id
+#       onecli agents set-secrets --id <agent-id> --secret-ids <anthropic-secret-id> )
+# 3. Verify the secret is now visible to the agent:
+onecli agents secrets --id <agent-id>      # the Anthropic secret must appear
+```
+
+**No container restart is needed** — the gateway resolves secrets per request, so the *next* model call from the running container picks up the credential. Re-send a board message; if it still `401`s, re-check `onecli agents secrets --id <agent-id>`.
+
+**One OneCLI agent is created per migrated board/agent_group**, each `selective` by default on its first spawn. Flip each agent as its board enters the canary (or list all agents with `onecli agents list` and flip each to `all` up front, once each board has been messaged once so its agent exists). Do not declare a board canary-ready until its agent shows the Anthropic secret.
+
 ## TaskFlow Dashboard (tf-mcontrol) — coexistence invariants
 
 Only relevant if the tf-mcontrol dashboard is deployed against this v2 install (it runs the engine as an MCP subprocess against the **same** `taskflow.db` the containers use). Skip this section if no dashboard is deployed. These requirements come from the R1–R5 + #396 + SEC engine work (coordination: `.claude/skills/add-taskflow/docs/2026-06-11-OUTBOUND-to-tf-mcontrol-R1-R5-status.md`).
