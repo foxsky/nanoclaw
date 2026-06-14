@@ -21,14 +21,20 @@ import {
 import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
 import { findSession } from '../../db/sessions.js';
 import { inboundDbPath } from '../../session-manager.js';
-import type { InboundEvent } from '../../channels/adapter.js';
+import type { ChannelAdapter, InboundEvent } from '../../channels/adapter.js';
 import type { MessagingGroup } from '../../types.js';
+import { _resetParkedDisambiguation } from './parked-disambiguation.js';
 
 vi.mock('../../container-runner.js', () => ({
   wakeContainer: vi.fn().mockResolvedValue(true),
   isContainerRunning: vi.fn().mockReturnValue(false),
   getActiveContainerCount: vi.fn().mockReturnValue(0),
   killContainer: vi.fn(),
+}));
+
+let mockWhatsApp: Partial<ChannelAdapter> | undefined;
+vi.mock('../../channels/channel-registry.js', () => ({
+  getChannelAdapter: vi.fn((t: string) => (t === 'whatsapp' ? mockWhatsApp : undefined)),
 }));
 
 vi.mock('../../config.js', async () => {
@@ -139,12 +145,64 @@ beforeEach(() => {
   tfDb = makeTaskflowDb();
 });
 
+beforeEach(() => {
+  mockWhatsApp = {
+    name: 'whatsapp',
+    channelType: 'whatsapp',
+    supportsThreads: false,
+    deliver: vi.fn(async () => 'wa-1'),
+  } as Partial<ChannelAdapter>;
+});
+
 afterEach(() => {
   tfDb.close();
   closeDb();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  _resetParkedDisambiguation();
   vi.clearAllMocks();
 });
+
+/** Add a second board (board-2 / team-beta) grant for ext-1 → cross-board. */
+function addSecondBoardGrant() {
+  tfDb.exec(`INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`);
+  tfDb
+    .prepare(
+      `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-2', '2026-03-10', '2026-03-10')`,
+    )
+    .run(futureExpiresAt());
+  // The board-2 side in central v2.db.
+  createAgentGroup({ id: 'ag-board2', name: 'Board2', folder: 'team-beta', agent_provider: null, created_at: now() });
+  createMessagingGroup({
+    id: 'mg-board2',
+    channel_type: 'whatsapp',
+    platform_id: '999999999@g.us',
+    name: 'Team Beta',
+    is_group: 1,
+    unknown_sender_policy: 'strict',
+    created_at: now(),
+  });
+  createMessagingGroupAgent({
+    id: 'mga-board2',
+    messaging_group_id: 'mg-board2',
+    agent_group_id: 'ag-board2',
+    engage_mode: 'pattern',
+    engage_pattern: '.',
+    sender_scope: 'all',
+    ignored_message_policy: 'drop',
+    session_mode: 'shared',
+    priority: 0,
+    created_at: now(),
+  });
+}
+
+function board2InboundRows() {
+  const session = findSession('mg-board2', null);
+  if (!session) return [];
+  const db = new Database(inboundDbPath('ag-board2', session.id));
+  const rows = db.prepare('SELECT * FROM messages_in').all() as Array<{ content: string }>;
+  db.close();
+  return rows;
+}
 
 async function route(mg = coldDmMg(), event = dmEvent()) {
   const { resolveUnroutedExternalDm } = await import('./external-dm-route.js');
@@ -224,18 +282,57 @@ describe('resolveUnroutedExternalDm — same-board route', () => {
   });
 });
 
-describe('resolveUnroutedExternalDm — cross-board is fail-closed (P2.5 will host-park)', () => {
-  it('does NOT route when grants span multiple boards', async () => {
-    tfDb.exec(
-      `INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`,
-    );
-    tfDb
-      .prepare(
-        `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-2', '2026-03-10', '2026-03-10')`,
-      )
-      .run(futureExpiresAt());
-    const ok = await route();
-    expect(ok).toBe(false);
+describe('resolveUnroutedExternalDm — cross-board host-parked disambiguation', () => {
+  // groupJid order: '120363...@g.us' < '999999999@g.us', so choice 1 = team-alpha
+  // (board-1), choice 2 = team-beta (board-2).
+  it('prompts + parks (consumes) without routing into any board on the first cross-board message', async () => {
+    addSecondBoardGrant();
+    const ok = await route(coldDmMg(), dmEvent('hey, about the meeting'));
+    expect(ok).toBe(true); // consumed, never dropped
     expect(boardInboundRows()).toHaveLength(0);
+    expect(board2InboundRows()).toHaveLength(0);
+    // a numbered prompt went back to the external's cold-DM jid
+    expect(mockWhatsApp!.deliver).toHaveBeenCalledOnce();
+    const sent = (mockWhatsApp!.deliver as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(sent[0]).toBe(COLD_DM_JID);
+    expect(sent[2].content.text).toMatch(/1\. team-alpha[\s\S]*2\. team-beta/);
+  });
+
+  it('a numeric selection is consumed host-side (not forwarded) and binds the chosen board', async () => {
+    addSecondBoardGrant();
+    await route(coldDmMg(), dmEvent('hi')); // prompt + park
+    const ok = await route(coldDmMg(), dmEvent('2')); // pick team-beta
+    expect(ok).toBe(true);
+    // the bare "2" must NOT be forwarded as board content
+    expect(boardInboundRows()).toHaveLength(0);
+    expect(board2InboundRows()).toHaveLength(0);
+  });
+
+  it('after selecting a board, the next real message routes there (no re-prompt)', async () => {
+    addSecondBoardGrant();
+    await route(coldDmMg(), dmEvent('hi')); // prompt
+    await route(coldDmMg(), dmEvent('2')); // select team-beta
+    (mockWhatsApp!.deliver as ReturnType<typeof vi.fn>).mockClear();
+
+    const ok = await route(coldDmMg(), dmEvent('I can do 3pm instead'));
+    expect(ok).toBe(true);
+    // routed to the CHOSEN board (board-2), not board-1, and no further prompt
+    expect(boardInboundRows()).toHaveLength(0);
+    const rows = board2InboundRows();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].content).text).toBe('I can do 3pm instead');
+    expect(JSON.parse(rows[0].content).externalActor.externalId).toBe('ext-1');
+    expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+  });
+
+  it('re-prompts on an unparseable selection (no valid number), still consuming', async () => {
+    addSecondBoardGrant();
+    await route(coldDmMg(), dmEvent('hi')); // prompt #1
+    const ok = await route(coldDmMg(), dmEvent('the second one please')); // not a number
+    expect(ok).toBe(true);
+    expect(boardInboundRows()).toHaveLength(0);
+    expect(board2InboundRows()).toHaveLength(0);
+    // prompted again (2 total deliveries)
+    expect(mockWhatsApp!.deliver).toHaveBeenCalledTimes(2);
   });
 });

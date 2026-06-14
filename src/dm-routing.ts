@@ -26,6 +26,10 @@ export interface DmGrant {
   occurrenceScheduledAt: string;
   inviteStatus: string;
   accessExpiresAt: string | null;
+  /** The grant board's WhatsApp group JID — lets cross-board disambiguation
+   *  build per-board routing choices without a second taskflow.db query. */
+  groupJid: string;
+  groupFolder: string;
 }
 
 export interface DmRouteResult {
@@ -149,6 +153,8 @@ export function resolveExternalDm(db: Database.Database, dmJid: string): DmRoute
       occurrenceScheduledAt: g.occurrence_scheduled_at,
       inviteStatus: g.invite_status,
       accessExpiresAt: g.access_expires_at,
+      groupJid: g.group_jid,
+      groupFolder: g.group_folder,
     })),
     needsDisambiguation: distinctGroups.size > 1,
   };

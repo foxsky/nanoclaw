@@ -48,6 +48,17 @@ import { log } from '../../log.js';
 import { resolveSession, writeSessionMessage } from '../../session-manager.js';
 import type { MessagingGroup } from '../../types.js';
 import { createDestination, getDestinationByName, normalizeName } from '../agent-to-agent/db/agent-destinations.js';
+import { getChannelAdapter } from '../../channels/channel-registry.js';
+import type { DmRouteResult } from '../../dm-routing.js';
+import {
+  bindParkedChoice,
+  buildDisambiguationChoices,
+  clearParkedDisambiguation,
+  getParkedDisambiguation,
+  parkDisambiguation,
+  parseDisambiguationChoice,
+  renderDisambiguationPrompt,
+} from './parked-disambiguation.js';
 
 /**
  * Ensure the board agent can reply to this external by the stable local name
@@ -100,27 +111,100 @@ export async function resolveUnroutedExternalDm(
 
   const ctx = { externalId: route.externalId, dmMgId: mg.id, jid };
 
-  // Cross-board grants must NOT be routed into a guessed board (would leak one
-  // board's inbound to another's agent). Host-parked disambiguation is P2.5;
-  // until then this is fail-closed — log + decline (the router drops it, which
-  // is itself the safe outcome: the external is not routed in).
-  if (route.needsDisambiguation) {
-    log.info('rc5-ext inbound: cross-board external DM — parked disambiguation not yet wired, not routing', ctx);
-    return false;
-  }
-
   const text = safeText(event);
   if (!text.trim()) {
     log.info('rc5-ext inbound: empty external DM text — not routing', ctx);
     return false;
   }
 
-  const boardMg = getMessagingGroupByPlatform('whatsapp', route.groupJid);
+  // Cross-board grants must NEVER be routed into a guessed board (would leak one
+  // board's inbound to another's agent). Host-park a numbered prompt and resolve
+  // the choice host-side instead.
+  if (route.needsDisambiguation) {
+    return handleCrossBoardDisambiguation(mg, route, text, event, ctx);
+  }
+
+  return routeExternalIntoBoard(route.groupJid, route, mg, event, text, ctx);
+}
+
+/**
+ * Cross-board: the external has grants on >1 board. Drive a host-side
+ * disambiguation: prompt → park → select (consumed, not forwarded) → bind →
+ * subsequent messages route to the bound board (re-validated each turn against
+ * the live grant set). Always returns true (consumed): a cross-board external
+ * message is never silently dropped, and is never routed to a guessed board.
+ */
+async function handleCrossBoardDisambiguation(
+  mg: MessagingGroup,
+  route: DmRouteResult,
+  text: string,
+  event: InboundEvent,
+  ctx: Record<string, unknown>,
+): Promise<boolean> {
+  const choices = buildDisambiguationChoices(route.grants);
+  const entry = getParkedDisambiguation(mg.id, route.externalId);
+
+  // Already bound to a board: route there, but only while that board is still
+  // in the external's CURRENT grants (a revoked grant clears the binding).
+  if (entry?.chosen) {
+    if (route.grants.some((g) => g.groupJid === entry.chosen!.groupJid)) {
+      bindParkedChoice(mg.id, route.externalId, entry.chosen); // refresh TTL
+      return routeExternalIntoBoard(entry.chosen.groupJid, route, mg, event, text, ctx);
+    }
+    clearParkedDisambiguation(mg.id); // bound board no longer granted → re-disambiguate
+  }
+
+  // Awaiting a selection: try to read one. A valid pick binds the board and is
+  // CONSUMED host-side (the bare "2" is never forwarded as board content).
+  if (entry && !entry.chosen) {
+    const pick = parseDisambiguationChoice(text, choices);
+    if (pick) {
+      bindParkedChoice(mg.id, route.externalId, pick);
+      log.info('rc5-ext inbound: external selected a board — consumed host-side, follow-ups route there', {
+        ...ctx,
+        boardId: pick.boardId,
+      });
+      return true;
+    }
+  }
+
+  // No entry, or an unparseable selection: (re)send the prompt and park.
+  const adapter = getChannelAdapter('whatsapp');
+  if (adapter?.deliver) {
+    try {
+      await adapter.deliver(mg.platform_id, null, {
+        kind: 'chat',
+        content: { type: 'text', text: renderDisambiguationPrompt(choices) },
+      });
+    } catch (err) {
+      log.error('rc5-ext inbound: failed to deliver disambiguation prompt', { ...ctx, err: String(err) });
+    }
+  }
+  parkDisambiguation(mg.id, route.externalId, choices);
+  log.info('rc5-ext inbound: cross-board external DM — prompted for board, parked', {
+    ...ctx,
+    choices: choices.length,
+  });
+  return true;
+}
+
+/**
+ * Write the external's message into the target board's agent session(s) with an
+ * externalId-only actor identity, a collision-safe reply destination, and the
+ * external's cold-DM mg as the reply address. Returns true if at least one
+ * agent session was written.
+ */
+async function routeExternalIntoBoard(
+  groupJid: string,
+  route: DmRouteResult,
+  mg: MessagingGroup,
+  event: InboundEvent,
+  text: string,
+  ctx: Record<string, unknown>,
+): Promise<boolean> {
+  const boardMg = getMessagingGroupByPlatform('whatsapp', groupJid);
   if (!boardMg) {
-    log.error('rc5-ext inbound: no messaging_group for grant group_jid — not routing', {
-      ...ctx,
-      groupJid: route.groupJid,
-    });
+    log.error('rc5-ext inbound: no messaging_group for grant group_jid — not routing', { ...ctx, groupJid });
     return false;
   }
   const agents = getMessagingGroupAgents(boardMg.id);
