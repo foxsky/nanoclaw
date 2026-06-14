@@ -113,7 +113,13 @@ The reply gate (C5) and capability mode (C7) both key on "the current resolved e
 ## P2 host — BUILT (Codex round-1 reviewed), DARK until P3
 Commits on skill/taskflow-v2: `f81fdb8c` (dup-`direct_chat_jid` fail-closed) · `7c41d351` (shared `ensureColdDmForExternal`→`cold-dm.ts`) · `fc48fe07` (`setUnroutedDmResolver` router hook) · `cc0a4acb` (same-board resolver) · `28b9b8aa` (cross-board parked disambiguation) · `68f2acc4` (Codex round-1 host hardening). Resolver `resolveUnroutedExternalDm` (`external-dm-route.ts`) is **NOT registered** in `modules/taskflow/index.ts` — DARK until P3.
 
-**Codex gpt-5.5/xhigh round 1 (P2 host diff) — fixed:** B1 channel_type guard (whatsapp-only auth); B2 disambiguation keyed on distinct **board_id** not group_jid (`boards.group_jid` non-unique) + routed row carries `externalActor.boardId`; I1 selection parsed against the **shown** parked choices then re-validated vs live grants; I2 `writeDestinations` after dest-create so a live container resolves `from="external-<id>"`.
+**Codex gpt-5.5/xhigh — 4 rounds, all host findings closed:**
+- **R1:** B1 channel_type guard (whatsapp-only auth) · B2 disambiguation keyed on distinct **board_id** not group_jid (`boards.group_jid` non-unique) + routed row carries `externalActor.boardId` · I1 selection parsed against the **shown** parked choices, re-validated vs live grants · I2 `writeDestinations` after dest-create so a live container resolves `from="external-<id>"`.
+- **R2:** confirmed B1/I2 closed; B2 still open (routing fanned out by group_jid) + I1 partial → fixed: **board-scoped routing** (route only to the agent whose folder = the chosen board's `group_folder`) + stale-collapse selection consumed on the single-board path.
+- **R3:** I1 CLOSED; B2 residual (single-agent shortcut) → fixed: **always** folder-filter, fail closed when none matches (a non-delivery beats a wrong-board route).
+- **R4:** **B2 CONFIRMED CLOSED** (all 4 folder cases). New IMPORTANT (chosen-board-revoked) → fixed: on the single-board path, only route when the stale binding === the single remaining board; a revoked binding with a different board remaining is consumed (no silent reroute).
+
+Commit chain: `68f2acc4` (R1) · `8c107ba3` (R2) · R3 · R4. Host half clean after R4 (resolver still DARK).
 
 **Open → P3 scope (from Codex round 1):**
 - **B3 (mixed-batch reply routing).** A *pure* external turn already replies to the external (`extractRouting` takes the batch's first row = the external cold-DM address). But if a board-group message and an external row land in the **same poll batch**, `extractRouting` (first-row-wins) + `originAttr` (`findByRouting(platform_id)`) can cross-contaminate the reply target. P3 must enforce **per-turn routing isolation** as part of "board-person XOR external per turn" — a turn carrying an external row must not share a reply target with board-group rows. (Code comment in `routeExternalIntoBoard`.)
