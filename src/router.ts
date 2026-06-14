@@ -143,6 +143,29 @@ export function setChannelRequestGate(fn: ChannelRequestGateFn): void {
   channelRequestGate = fn;
 }
 
+/**
+ * Unrouted-DM resolver hook (RC5-ext inbound). Runs for a DM on a messaging
+ * group that has no wired agents, BEFORE the `!isMention` drop — WhatsApp DMs
+ * don't reliably set `isMention`, and a never-contacted external's reply is
+ * addressed at the bot without a platform mention. The taskflow module
+ * registers this to authenticate the sender JID against external-meeting
+ * grants and, if matched, route the reply into the granting board's session
+ * (returning true = consumed). Returning false (no grant / not an external)
+ * falls through to the existing drop/escalation path. A separate hook from
+ * `channelRequestGate` (escalate-unknown-channel) and `messageInterceptor`
+ * (single slot owned by permissions): orthogonal concern, orthogonal owner.
+ */
+export type UnroutedDmResolverFn = (mg: MessagingGroup, event: InboundEvent) => Promise<boolean>;
+
+let unroutedDmResolver: UnroutedDmResolverFn | null = null;
+
+export function setUnroutedDmResolver(fn: UnroutedDmResolverFn): void {
+  if (unroutedDmResolver) {
+    log.warn('Unrouted-DM resolver overwritten');
+  }
+  unroutedDmResolver = fn;
+}
+
 function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string } {
   try {
     return JSON.parse(raw);
@@ -208,6 +231,23 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   // 1b. No wirings — either silent drop (plain chatter / denied channel) or
   //     escalate to owner for channel-registration approval.
   if (agentCount === 0) {
+    // RC5-ext inbound: a DM from a never-contacted external lands on a cold-DM
+    // messaging_group with no wirings. Give a registered resolver first refusal
+    // BEFORE the `!isMention` drop (WhatsApp DMs don't set isMention) — it
+    // authenticates the JID against external grants and routes a matched reply
+    // into the granting board's session. DMs only (is_group === 0): a group
+    // with no wirings is never an external-DM reply. A resolver throw must not
+    // crash the inbound pipeline — log and fall through to the existing drop
+    // (which is itself the fail-closed outcome: the external is not routed in).
+    if (mg.is_group === 0 && unroutedDmResolver) {
+      let consumed = false;
+      try {
+        consumed = await unroutedDmResolver(mg, event);
+      } catch (err) {
+        log.error('Unrouted-DM resolver threw — falling through to drop', { messagingGroupId: mg.id, err });
+      }
+      if (consumed) return;
+    }
     if (!isMention) return;
     if (mg.denied_at) {
       log.debug('Message dropped — channel was denied by owner', {

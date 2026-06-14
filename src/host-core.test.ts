@@ -31,6 +31,7 @@ import {
 } from './session-manager.js';
 import { getSession, findSession } from './db/sessions.js';
 import type { InboundEvent } from './channels/adapter.js';
+import type { MessagingGroup } from './types.js';
 
 // Mock container runner to prevent actual Docker spawning
 vi.mock('./container-runner.js', () => ({
@@ -1068,5 +1069,132 @@ describe('delivery', () => {
 
     expect(undelivered).toHaveLength(1);
     expect(JSON.parse(undelivered[0].content).text).toBe('Agent response');
+  });
+});
+
+// RC5-ext inbound P2.3: the unrouted-DM resolver hook. A DM on a wiring-less
+// cold-DM messaging_group gets the resolver first refusal BEFORE the
+// `!isMention` drop. Returning true consumes (no drop / no fall-through);
+// returning false (or throwing) falls through to the existing drop path. Group
+// messaging_groups are never offered to the resolver.
+describe('unrouted-DM resolver hook', () => {
+  function coldDmEvent(isMention = true): InboundEvent {
+    return {
+      channelType: 'whatsapp',
+      platformId: '5585999990000@s.whatsapp.net',
+      threadId: null,
+      message: {
+        id: `dm-${Math.random().toString(36).slice(2)}`,
+        kind: 'chat',
+        content: JSON.stringify({ sender: 'Maria', text: 'sure, works for me' }),
+        timestamp: now(),
+        isMention,
+      },
+    };
+  }
+
+  beforeEach(() => {
+    // Cold-DM mg: is_group=0, NO wired agents → agentCount === 0.
+    createMessagingGroup({
+      id: 'mg-cold',
+      channel_type: 'whatsapp',
+      platform_id: '5585999990000@s.whatsapp.net',
+      name: 'cold external',
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+    // Group mg with no wirings — must NEVER reach the resolver.
+    createMessagingGroup({
+      id: 'mg-group',
+      channel_type: 'whatsapp',
+      platform_id: '120363000000000099@g.us',
+      name: 'unwired group',
+      is_group: 1,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+  });
+
+  afterEach(async () => {
+    const { setUnroutedDmResolver } = await import('./router.js');
+    setUnroutedDmResolver(async () => false); // reset so no later test is affected
+  });
+
+  function drops() {
+    return getDb()
+      .prepare(`SELECT * FROM unregistered_senders WHERE reason = 'no_agent_wired'`)
+      .all() as Array<{ messaging_group_id: string }>;
+  }
+
+  const okResolver = () => vi.fn((_mg: MessagingGroup, _event: InboundEvent) => Promise.resolve(true));
+
+  it('consumes the DM when the resolver returns true — no fall-through drop', async () => {
+    const { routeInbound, setUnroutedDmResolver } = await import('./router.js');
+    const resolver = okResolver();
+    setUnroutedDmResolver(resolver);
+
+    await routeInbound(coldDmEvent());
+
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(resolver.mock.calls[0][0].id).toBe('mg-cold');
+    expect(drops()).toHaveLength(0);
+  });
+
+  it('falls through to the no_agent_wired drop when the resolver declines (returns false)', async () => {
+    const { routeInbound, setUnroutedDmResolver } = await import('./router.js');
+    const resolver = vi.fn((_mg: MessagingGroup, _event: InboundEvent) => Promise.resolve(false));
+    setUnroutedDmResolver(resolver);
+
+    await routeInbound(coldDmEvent());
+
+    expect(resolver).toHaveBeenCalledOnce();
+    const d = drops();
+    expect(d).toHaveLength(1);
+    expect(d[0].messaging_group_id).toBe('mg-cold');
+  });
+
+  it('is gated on is_group === 0 — a wiring-less GROUP never reaches the resolver', async () => {
+    const { routeInbound, setUnroutedDmResolver } = await import('./router.js');
+    const resolver = okResolver();
+    setUnroutedDmResolver(resolver);
+
+    await routeInbound({
+      channelType: 'whatsapp',
+      platformId: '120363000000000099@g.us',
+      threadId: null,
+      message: {
+        id: 'grp-1',
+        kind: 'chat',
+        content: JSON.stringify({ sender: 'X', text: '@bot hi' }),
+        timestamp: now(),
+        isMention: true,
+      },
+    });
+
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('a resolver throw does not crash routing — falls through to the drop', async () => {
+    const { routeInbound, setUnroutedDmResolver } = await import('./router.js');
+    const resolver = vi.fn((_mg: MessagingGroup, _event: InboundEvent): Promise<boolean> => {
+      throw new Error('taskflow.db unavailable');
+    });
+    setUnroutedDmResolver(resolver);
+
+    await expect(routeInbound(coldDmEvent())).resolves.toBeUndefined();
+
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(drops()).toHaveLength(1);
+  });
+
+  it('runs BEFORE the !isMention drop — a non-mention DM still reaches the resolver', async () => {
+    const { routeInbound, setUnroutedDmResolver } = await import('./router.js');
+    const resolver = vi.fn(async () => true);
+    setUnroutedDmResolver(resolver);
+
+    await routeInbound(coldDmEvent(false)); // WhatsApp DM with no platform mention
+
+    expect(resolver).toHaveBeenCalledOnce();
   });
 });
