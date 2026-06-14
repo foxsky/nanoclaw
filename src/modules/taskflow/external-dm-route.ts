@@ -138,10 +138,22 @@ export async function resolveUnroutedExternalDm(
   const stale = getParkedDisambiguation(mg.id, route.externalId);
   if (stale) {
     clearParkedDisambiguation(mg.id);
-    if (parseDisambiguationChoice(text, stale.choices)) {
-      log.info('rc5-ext inbound: stale disambiguation selection after grants collapsed — consumed', ctx);
+    if (!stale.chosen) {
+      // Pending selection for the old multi-board prompt: swallow ONLY a bare
+      // numeric pick (never forward the digit as content); real content routes.
+      if (parseDisambiguationChoice(text, stale.choices)) {
+        log.info('rc5-ext inbound: stale disambiguation selection after grants collapsed — consumed', ctx);
+        return true;
+      }
+    } else if (stale.chosen.boardId !== route.grants[0].boardId) {
+      // The board the external had BOUND was revoked and a DIFFERENT board now
+      // remains. Do not silently reroute this message (meant for the bound board)
+      // into the other board — consume it; the next message routes fresh to the
+      // remaining board with no stale binding.
+      log.info('rc5-ext inbound: bound board revoked, a different board remains — consumed (no silent reroute)', ctx);
       return true;
     }
+    // else: bound board === the single remaining board → fall through and route.
   }
 
   // Every grant is on one board (needsDisambiguation is board-keyed).
@@ -244,17 +256,16 @@ async function routeExternalIntoBoard(
     });
     return false;
   }
-  // Board-scope the target. `boards.group_jid` is NOT unique, so two distinct
-  // boards (distinct agent groups) can share one messaging_group. With a single
-  // wired agent there's no ambiguity (and no drift risk). With MULTIPLE, route
-  // ONLY to the agent group whose folder matches the chosen board's group_folder
-  // — never fan out to a co-wired board's agent the external isn't acting on.
-  const agents =
-    allAgents.length === 1
-      ? allAgents
-      : allAgents.filter((a) => getAgentGroup(a.agent_group_id)?.folder === groupFolder);
+  // Board-scope the target. `boards.group_jid` is NOT unique, so a messaging
+  // group can carry agents for more than one board — and there is no
+  // schema-enforced board↔agent invariant. Route ONLY to the agent group whose
+  // folder matches the chosen board's group_folder, ALWAYS (no single-agent
+  // shortcut: a lone wired agent could belong to a different board). If none
+  // matches (e.g. a drifted group_folder), fail closed — a non-delivery is far
+  // safer than routing the external's content to the wrong board's agent.
+  const agents = allAgents.filter((a) => getAgentGroup(a.agent_group_id)?.folder === groupFolder);
   if (agents.length === 0) {
-    log.error('rc5-ext inbound: shared-group mg — no wired agent matches the chosen board folder — not routing', {
+    log.error('rc5-ext inbound: no wired agent matches the chosen board folder — not routing (fail closed)', {
       ...ctx,
       boardMgId: boardMg.id,
       groupFolder,

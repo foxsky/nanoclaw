@@ -324,6 +324,15 @@ describe('resolveUnroutedExternalDm — same-board route', () => {
     // was even resolved for it.
     expect(findSessionForAgent('ag-beta', 'mg-board', null)).toBeUndefined();
   });
+
+  it('FAIL-CLOSED when no wired agent folder matches the grant board folder (drift)', async () => {
+    // The board's group_folder doesn't match any agent wired to its group — never
+    // guess; a non-delivery is safer than routing to a possibly-wrong board.
+    tfDb.exec(`UPDATE boards SET group_folder = 'ghost-folder' WHERE id = 'board-1'`);
+    const ok = await route();
+    expect(ok).toBe(false);
+    expect(boardInboundRows()).toHaveLength(0);
+  });
 });
 
 describe('resolveUnroutedExternalDm — cross-board host-parked disambiguation', () => {
@@ -379,6 +388,20 @@ describe('resolveUnroutedExternalDm — cross-board host-parked disambiguation',
     expect(ok).toBe(true);
     // the bare "2" must NOT be forwarded as content to the remaining board
     expect(boardInboundRows()).toHaveLength(0);
+  });
+
+  it('does NOT silently reroute when the BOUND board is revoked but a different board remains (R4)', async () => {
+    addSecondBoardGrant();
+    await route(coldDmMg(), dmEvent('hi')); // prompt (board-1=#1, board-2=#2)
+    await route(coldDmMg(), dmEvent('2')); // bind board-2 (team-beta)
+    // board-2's grant is revoked; board-1 remains → single board, but NOT the bound one
+    tfDb.exec(`UPDATE meeting_external_participants SET invite_status = 'revoked' WHERE board_id = 'board-2'`);
+
+    const ok = await route(coldDmMg(), dmEvent('can we still meet?'));
+    expect(ok).toBe(true); // consumed
+    // content meant for the bound (revoked) board must NOT land in the other board
+    expect(boardInboundRows()).toHaveLength(0); // board-1 (team-alpha)
+    expect(board2InboundRows()).toHaveLength(0);
   });
 
   it('re-prompts on an unparseable selection (no valid number), still consuming', async () => {
