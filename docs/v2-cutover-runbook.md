@@ -42,7 +42,7 @@ Required operator choices:
 
 The v2 container authenticates to Anthropic **only** through the OneCLI gateway — no token in `.env` reaches the container (`container-runner.ts` passes no Anthropic auth env; `agent-runner` runs the SDK with `env:{...process.env}`). The gateway injects `CLAUDE_CODE_OAUTH_TOKEN=placeholder` into the container, the bundled `claude` CLI emits `Authorization: Bearer placeholder`, and the gateway **rewrites** that header with the real vaulted token on the wire. The gateway injects that placeholder **only once the agent has the Anthropic secret effectively assigned** (verified live: an unprovisioned/selective agent's `/api/container-config` returns an empty env — no placeholder, no Bearer header → `401` on every model call).
 
-Auto-created agents start in `selective` secret-mode with **no secrets assigned** (`container-runner.ts` → `onecli.ensureAgent` → `POST /api/agents`). The agent does not exist until the migration spawns the first container, so this **cannot be pre-staged** — it is a mandatory post-spawn step. A board whose agent has not been flipped will silently `401` instead of answering.
+Auto-created agents start in `selective` secret-mode with **no secrets assigned** (`container-runner.ts` → `onecli.ensureAgent` → `POST /api/agents`). The agent does not exist until the first container spawn, so the flip itself is inherently post-spawn — but you can pre-stage the *intent* with the host knob below, which flips each agent automatically the moment it is created. A board whose agent has not been flipped will silently `401` instead of answering.
 
 **Precondition — the Anthropic credential must already be in the vault.** The migration's `3c-auth` step only *checks*; it does not create the secret. Seed it during OneCLI setup (from the v1 `CLAUDE_CODE_OAUTH_TOKEN`):
 
@@ -51,7 +51,21 @@ onecli secrets create --name Anthropic --type anthropic --value <token> --host-p
 onecli secrets list | grep -i anthropic   # confirm the secret exists before flipping any agent
 ```
 
-**Run AFTER a board's first message reaches v2** (that message spawns the container which creates the OneCLI agent), and BEFORE counting that board's canary samples — a `401`'d message is not a valid canary sample.
+### Preferred — automated flip (set once, covers every board)
+
+Set the host knob **before** cutover; the host then flips each agent to that mode on its first spawn (the moment the agent is created), so you never have to chase per-board flips:
+
+```bash
+grep -q '^NANOCLAW_ONECLI_AUTO_SECRET_MODE=' .env \
+  && sed -i.bak 's/^NANOCLAW_ONECLI_AUTO_SECRET_MODE=.*/NANOCLAW_ONECLI_AUTO_SECRET_MODE=all/' .env && rm -f .env.bak \
+  || echo 'NANOCLAW_ONECLI_AUTO_SECRET_MODE=all' >> .env
+```
+
+Mechanics + guarantees (`src/container-runner.ts` `ensureAgentSecretMode`): the host issues `PATCH /api/agents/<id>/secret-mode` with its own `ONECLI_API_KEY` (no CLI binary / `$PATH` / `~/.onecli` profile dependency). It is **fail-soft + retry** — a transient gateway error never blocks the spawn and is re-attempted on the next spawn, so a blip can't permanently strand a board at `401`; concurrent first-spawns of the same agent share one PATCH; once a flip succeeds it is skipped on every later spawn (off the hot path). Default unset = feature off (no behavior change). Valid values: `all` | `selective`. Watch `logs/nanoclaw.log` for `OneCLI agent secret-mode auto-flipped` (success) or `auto-flip failed; will retry` (transient).
+
+### Fallback / verification — manual flip
+
+If the knob is unset, or to confirm/repair a specific board, flip by hand. **Run AFTER a board's first message reaches v2** (that message spawns the container which creates the OneCLI agent), and BEFORE counting that board's canary samples — a `401`'d message is not a valid canary sample.
 
 ```bash
 # 1. Find the agent (identifier == the agent_group id):

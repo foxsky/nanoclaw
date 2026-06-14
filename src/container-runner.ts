@@ -52,6 +52,94 @@ import type { AgentGroup, Session } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
+// `<agentId>:<mode>` keys whose secret-mode flip has SUCCEEDED in this host process (→ off the
+// per-spawn hot path), and in-flight flips on the same key (→ concurrent first-spawns of the same
+// agent group share one PATCH instead of racing). Keyed by id AND mode so a later request for a
+// different mode is not falsely skipped. Module-level so they persist across spawns; injectable in
+// ensureAgentSecretMode for tests. A failed flip is deliberately NOT recorded as done, so the next
+// spawn retries it — a transient gateway/network blip must not permanently strand an agent at 401.
+const secretModeFlipped = new Set<string>();
+const secretModeInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Ensure a newly-spawning agent's OneCLI vault agent is in the operator-requested secret mode, so
+ * the gateway injects CLAUDE_CODE_OAUTH_TOKEN=placeholder and the container can emit the
+ * `Authorization: Bearer` header the gateway rewrites (a `selective` agent with no secrets gets no
+ * placeholder → no Bearer → 401 on every model call; see docs/v2-cutover-runbook.md). No-op unless
+ * the operator opted in via NANOCLAW_ONECLI_AUTO_SECRET_MODE (`mode` is null otherwise).
+ *
+ * Flips via the gateway's `PATCH /api/agents/<id>/secret-mode` using the host's own
+ * ONECLI_API_KEY Bearer auth — the same credentials ensureAgent/applyContainerConfig already use —
+ * so it does NOT depend on a CLI binary, $PATH, or a per-HOME `~/.onecli` profile. Mirrors what
+ * `onecli agents set-secret-mode --id <id> --mode <mode>` does. Idempotent on the gateway.
+ *
+ * Fail-SOFT: on any error the spawn proceeds (a selective agent still boots, just 401s until the
+ * flip lands), and the id is left out of the done-set so the next spawn re-attempts. Awaited before
+ * the caller's applyContainerConfig so a successful flip is reflected in the container-config env.
+ */
+export async function ensureAgentSecretMode(
+  agentIdentifier: string,
+  mode: 'all' | 'selective' | null,
+  deps: {
+    fetchImpl?: typeof fetch;
+    onecliUrl?: string;
+    apiKey?: string;
+    flipped?: Set<string>;
+    inflight?: Map<string, Promise<void>>;
+  } = {},
+): Promise<void> {
+  if (!mode || !agentIdentifier) return;
+  const flipped = deps.flipped ?? secretModeFlipped;
+  const inflight = deps.inflight ?? secretModeInFlight;
+  const key = `${agentIdentifier}:${mode}`;
+  if (flipped.has(key)) return;
+  const baseUrl = (deps.onecliUrl ?? ONECLI_URL ?? '').replace(/\/+$/, '');
+  if (!baseUrl) {
+    // No gateway URL ⇒ no valid endpoint to PATCH. Skip rather than retry-spin on a relative URL.
+    log.warn('OneCLI secret-mode auto-flip skipped: no gateway URL (ONECLI_URL unset)', { agentIdentifier, mode });
+    return;
+  }
+  let pending = inflight.get(key);
+  if (!pending) {
+    const fetchImpl = deps.fetchImpl ?? fetch;
+    const apiKey = deps.apiKey ?? ONECLI_API_KEY;
+    const url = `${baseUrl}/api/agents/${encodeURIComponent(agentIdentifier)}/secret-mode`;
+    // Mirror the SDK: only send Authorization when a key is configured (a keyless local gateway
+    // must not receive `Bearer undefined`, which would 401 the flip forever).
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    // Promise.resolve().then(...) so even a SYNCHRONOUS throw from fetchImpl is funneled into the
+    // catch (fail-soft), never out of this function where it could abort the spawn.
+    pending = Promise.resolve()
+      .then(() =>
+        fetchImpl(url, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ id: agentIdentifier, mode }),
+          signal: AbortSignal.timeout(15000),
+        }),
+      )
+      .then((res) => {
+        if (!res.ok) throw new Error(`secret-mode PATCH returned ${res.status}`);
+        flipped.add(key);
+        log.info('OneCLI agent secret-mode auto-flipped', { agentIdentifier, mode });
+      })
+      .catch((err: unknown) => {
+        // Fail-soft + retry-on-next-spawn: do NOT add to `flipped`, so the next spawn re-attempts.
+        log.warn('OneCLI secret-mode auto-flip failed; will retry on next spawn (agent may 401 until then)', {
+          agentIdentifier,
+          mode,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        inflight.delete(key);
+      });
+    inflight.set(key, pending);
+  }
+  await pending;
+}
+
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
@@ -303,6 +391,15 @@ export function taskflowEmbedEnvArgs(
     '-e',
     `NANOCLAW_TASKFLOW_EMBED_MODEL=${env.EMBEDDING_MODEL || 'bge-m3'}`,
   ];
+}
+
+// Resolve the opt-in NANOCLAW_ONECLI_AUTO_SECRET_MODE knob to a valid gateway secret mode, or
+// null when the feature is off. Fail-closed on a malformed value (only the two real modes pass),
+// so a typo never reaches the gateway as a bad mode. Unset => null => current behavior unchanged.
+// Pure for unit testing. The caller warns on a set-but-invalid value (this stays log-free).
+export function resolveFlipMode(env: NodeJS.ProcessEnv = process.env): 'all' | 'selective' | null {
+  const mode = env.NANOCLAW_ONECLI_AUTO_SECRET_MODE;
+  return mode === 'all' || mode === 'selective' ? mode : null;
 }
 
 function resolveProviderContribution(
@@ -575,6 +672,16 @@ async function buildContainerArgs(
   // message pending, and the next sweep tick retries.
   if (agentIdentifier) {
     await onecli.ensureAgent({ name: agentGroup.name, identifier: agentIdentifier });
+    const rawFlipMode = process.env.NANOCLAW_ONECLI_AUTO_SECRET_MODE;
+    const flipMode = resolveFlipMode();
+    if (rawFlipMode && !flipMode) {
+      log.warn('NANOCLAW_ONECLI_AUTO_SECRET_MODE has an invalid value — ignoring (expected "all" or "selective")', {
+        value: rawFlipMode,
+      });
+    }
+    // Awaited before applyContainerConfig so a successful flip is reflected in the gateway's
+    // container-config env (the placeholder that lets the container emit Authorization: Bearer).
+    await ensureAgentSecretMode(agentIdentifier, flipMode);
   }
   const onecliApplied = await onecli.applyContainerConfig(args, { addHostMapping: false, agent: agentIdentifier });
   if (!onecliApplied) {

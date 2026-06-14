@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  ensureAgentSecretMode,
   holidayExemptEnvArgs,
   memoryEnvArgs,
   replayContainerEnvArgs,
+  resolveFlipMode,
   resolveProviderName,
   taskflowEmbedEnvArgs,
 } from './container-runner.js';
@@ -142,5 +144,120 @@ describe('holidayExemptEnvArgs', () => {
     // pollutes the arg list; more importantly the contract is "only when set". Folder still goes.
     expect(holidayExemptEnvArgs('acme', {})).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=acme']);
     expect(holidayExemptEnvArgs('acme', { TASKFLOW_HOLIDAY_EXEMPT: '' })).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=acme']);
+  });
+});
+
+describe('resolveFlipMode', () => {
+  it('returns null when the knob is unset (opt-in: default off, no behavior change)', () => {
+    // The feature must never flip an agent unless the operator explicitly asked. Behavior for
+    // anyone who has not set the knob must be byte-identical to before this code shipped.
+    expect(resolveFlipMode({})).toBeNull();
+  });
+
+  it('passes through both real gateway modes (the knob value IS the mode)', () => {
+    expect(resolveFlipMode({ NANOCLAW_ONECLI_AUTO_SECRET_MODE: 'all' })).toBe('all');
+    expect(resolveFlipMode({ NANOCLAW_ONECLI_AUTO_SECRET_MODE: 'selective' })).toBe('selective');
+  });
+
+  it('fails closed on a malformed value (a typo must not reach the gateway as a bad mode)', () => {
+    // Returning null (not the raw string) is what stops `onecli ... --mode al` / a bad PATCH body;
+    // the caller separately warns so the operator sees their typo rather than silent no-op.
+    expect(resolveFlipMode({ NANOCLAW_ONECLI_AUTO_SECRET_MODE: 'al' })).toBeNull();
+    expect(resolveFlipMode({ NANOCLAW_ONECLI_AUTO_SECRET_MODE: '' })).toBeNull();
+  });
+});
+
+describe('ensureAgentSecretMode', () => {
+  const okFetch = () =>
+    vi.fn(
+      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]): Promise<Response> =>
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+    );
+
+  it('does NOT call the gateway when mode is null (feature off → zero behavior change)', async () => {
+    const fetchImpl = okFetch();
+    await ensureAgentSecretMode('ag-1', null, { fetchImpl, flipped: new Set(), inflight: new Map() });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('PATCHes the secret-mode endpoint with Bearer auth + {id,mode}, then records the agent as done', async () => {
+    // The flip must hit the gateway's own API with the host's ONECLI_API_KEY (NOT a CLI/HOME
+    // profile), so it works regardless of $PATH or where ~/.onecli lives.
+    const fetchImpl = okFetch();
+    const flipped = new Set<string>();
+    await ensureAgentSecretMode('ag-1', 'all', {
+      fetchImpl,
+      onecliUrl: 'http://gw:10254',
+      apiKey: 'k3y',
+      flipped,
+      inflight: new Map(),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(init).toBeDefined();
+    expect(url).toBe('http://gw:10254/api/agents/ag-1/secret-mode');
+    expect(init!.method).toBe('PATCH');
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer k3y');
+    expect(JSON.parse(init!.body as string)).toEqual({ id: 'ag-1', mode: 'all' });
+    expect(flipped.has('ag-1:all')).toBe(true); // recorded by id:mode → won't re-flip
+  });
+
+  it('omits Authorization when no api key is configured (keyless gateway must not get Bearer undefined)', async () => {
+    // Mirrors the SDK: an unauthenticated local gateway would 401 forever on `Bearer undefined`.
+    const fetchImpl = okFetch();
+    await ensureAgentSecretMode('ag-1', 'all', { fetchImpl, apiKey: '', flipped: new Set(), inflight: new Map() });
+    const init = fetchImpl.mock.calls[0][1]!;
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('skips the gateway for an already-flipped agent (stays off the per-spawn hot path)', async () => {
+    // Once a flip has succeeded this process, every later spawn of that agent must be a no-op —
+    // no PATCH per message. This is what makes the feature free on the steady-state path.
+    const fetchImpl = okFetch();
+    await ensureAgentSecretMode('ag-1', 'all', { fetchImpl, flipped: new Set(['ag-1:all']), inflight: new Map() });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keys dedup by id AND mode (a different requested mode is not falsely skipped)', async () => {
+    // `selective` already done must NOT suppress an `all` request — they are distinct intents.
+    const fetchImpl = okFetch();
+    await ensureAgentSecretMode('ag-1', 'all', { fetchImpl, flipped: new Set(['ag-1:selective']), inflight: new Map() });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1]!.body as string)).toEqual({ id: 'ag-1', mode: 'all' });
+  });
+
+  it('serializes concurrent first-spawns of the same agent into ONE PATCH (no race/dead-zone)', async () => {
+    // Two sessions of the same agent group can spawn at once; without sharing the in-flight
+    // promise, one could proceed to applyContainerConfig before the flip lands and boot at 401.
+    const fetchImpl = okFetch();
+    const flipped = new Set<string>();
+    const inflight = new Map<string, Promise<void>>();
+    await Promise.all([
+      ensureAgentSecretMode('ag-1', 'all', { fetchImpl, flipped, inflight }),
+      ensureAgentSecretMode('ag-1', 'all', { fetchImpl, flipped, inflight }),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(flipped.has('ag-1:all')).toBe(true);
+  });
+
+  it('is fail-soft and RETRIES: a failed flip neither throws nor marks the agent done', async () => {
+    // The critical correctness property Codex flagged: a transient gateway error must not
+    // permanently strand an agent at 401. It must not abort the spawn (no throw), and the agent
+    // must stay out of the done-set so the next spawn re-attempts — eventually succeeding.
+    const flipped = new Set<string>();
+    const inflight = new Map<string, Promise<void>>();
+    const failing = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]): Promise<Response> => new Response('nope', { status: 503 }),
+    );
+    await expect(
+      ensureAgentSecretMode('ag-1', 'all', { fetchImpl: failing, flipped, inflight }),
+    ).resolves.toBeUndefined(); // fail-soft: never throws
+    expect(flipped.has('ag-1:all')).toBe(false); // NOT recorded → retried next spawn
+
+    const okAgain = okFetch();
+    await ensureAgentSecretMode('ag-1', 'all', { fetchImpl: okAgain, flipped, inflight });
+    expect(okAgain).toHaveBeenCalledTimes(1); // the retry actually fires
+    expect(flipped.has('ag-1:all')).toBe(true);
   });
 });
