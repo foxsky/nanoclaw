@@ -9,6 +9,7 @@
  *  verbatim early-return, so FastAPI/cross-repo verbatim consumers never touch
  *  the DB. */
 import { getTurnActor } from './turn-actor.js';
+import { getTurnExternalActor } from './turn-external-actor.js';
 import { isApprovedReplay } from './replay-flag.js';
 import { resolveAuthenticatedSenderPerson } from './actor-person-resolution.js';
 
@@ -203,10 +204,12 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
   // unprivileged mutations don't hit a person check). Here we DELETE sender_name when unresolved as a
   // belt-and-suspenders backstop (an unguarded mutate tool then gets no actor → engine person checks
   // fail; an unresolved READ of "my tasks" correctly can't resolve a person). sender_external_id is
-  // STRIPPED: no authenticated external-id reaches the container today (resolveExternalDm is unwired),
-  // so any model-supplied value is a spoof; the FastAPI/verbatim external-accept path returned above and
-  // is untouched. Gated to the in-session chat surface (env board, not #407 replay — the parked args were
-  // authenticated at park time and re-binding to a now-empty channel would wrongly DENY them).
+  // CHANNEL-ONLY (RC5-ext P3): the model value is always stripped, then SET from the authenticated
+  // turn_external_actor channel iff it resolves (a PURE external turn — board-person XOR external).
+  // A board turn leaves it stripped (the external channel is poisoned/unresolved); the FastAPI/verbatim
+  // external-accept path returned above and is untouched. Gated to the in-session chat surface (env board,
+  // not #407 replay — the parked args were authenticated at park time and re-binding to a now-empty
+  // channel would wrongly DENY them).
   if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !isApprovedReplay()) {
     if ('sender_name' in out) {
       const actor = getTurnActor();
@@ -222,7 +225,12 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
           actor.sender;
       } else delete out.sender_name;
     }
-    if ('sender_external_id' in out) delete out.sender_external_id;
+    // Strip any model-supplied external id (a spoof), then bind the authenticated
+    // one. Resolves ONLY on a pure external turn — so a board turn never carries an
+    // external id, and an external turn never carries a board-person sender_name.
+    delete out.sender_external_id;
+    const ext = getTurnExternalActor();
+    if (ext.resolved) out.sender_external_id = ext.externalId;
   }
   return out;
 }

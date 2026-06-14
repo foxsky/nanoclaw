@@ -14,6 +14,11 @@ import {
 } from './taskflow-helpers.ts';
 import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.ts';
 import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.ts';
+import {
+  __resetTurnExternalActorForTesting,
+  clearTurnExternalActor,
+  setTurnExternalActor,
+} from './turn-external-actor.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
 import { runAsApprovedReplay } from './replay-flag.ts';
 
@@ -158,6 +163,65 @@ describe('SEC#13 (#419) — sender_name bound to the authenticated turn actor on
     setTurnActor(['Ana']);
     const out = normalizeAgentIds({ board_id: 'b', sender_name: 'Carlos' });
     expect(out.sender_name).toBe('Carlos');
+  });
+});
+
+// RC5-ext P3 — sender_external_id is CHANNEL-ONLY: stripped from the model, then
+// set from the authenticated turn_external_actor iff it resolves (a pure external
+// turn). Board-person XOR external per turn means the two ids never coexist.
+const maria = { externalId: 'ext-1', displayName: 'Maria', sourceDmMgId: 'mg-x', boardId: 'board-seci-taskflow' };
+
+describe('RC5-ext (P3) — sender_external_id bound to the authenticated external actor', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    __resetTurnExternalActorForTesting();
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+  });
+  afterEach(() => {
+    clearTurnActor();
+    clearTurnExternalActor();
+    closeSessionDb();
+    closeTaskflowDb();
+    setVerbatimIds(false);
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('OVERWRITES a model-supplied sender_external_id with the AUTHENTICATED external id', () => {
+    setTurnExternalActor([maria]); // pure external turn (turn_actor stays poisoned/unset)
+    const out = normalizeAgentIds({
+      board_id: 'b',
+      action: 'add_note',
+      task_id: 'M1',
+      sender_external_id: 'ext-IMPOSTOR',
+    });
+    expect(out.sender_external_id).toBe('ext-1');
+  });
+
+  it('SETS sender_external_id even when the model omitted it (channel is authoritative)', () => {
+    setTurnExternalActor([maria]);
+    const out = normalizeAgentIds({ board_id: 'b', action: 'add_note', task_id: 'M1' });
+    expect(out.sender_external_id).toBe('ext-1');
+  });
+
+  it('does NOT bind a board-person sender_name on an external turn (mutual exclusivity)', () => {
+    setTurnExternalActor([maria]); // external resolved; turn_actor unresolved
+    const out = normalizeAgentIds({ board_id: 'b', task_id: 'M1', sender_name: 'BossManager' });
+    expect('sender_name' in out).toBe(false); // unresolved board actor → deleted
+    expect(out.sender_external_id).toBe('ext-1');
+  });
+
+  it('a BOARD turn (turn_actor resolved, no external) carries NO sender_external_id', () => {
+    setTurnActor(['Ana']);
+    const out = normalizeAgentIds({ board_id: 'b', task_id: 'P1', sender_name: 'Ana', sender_external_id: 'ext-spoof' });
+    expect('sender_external_id' in out).toBe(false);
+    expect(out.sender_name).toBe('Ana');
+  });
+
+  it('a POISONED external turn (two externals) does NOT bind — fail closed', () => {
+    setTurnExternalActor([maria, { ...maria, externalId: 'ext-2' }]);
+    const out = normalizeAgentIds({ board_id: 'b', action: 'add_note', task_id: 'M1', sender_external_id: 'ext-x' });
+    expect('sender_external_id' in out).toBe(false);
   });
 });
 
