@@ -48,13 +48,20 @@ export function resolveExternalDm(db: Database.Database, dmJid: string): DmRoute
   const tableCheck = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`).get();
   if (!tableCheck) return null;
 
-  // 1. Resolve external contact by direct_chat_jid
-  let contact = db
+  // 1. Resolve external contact by direct_chat_jid. Identity here IS
+  // authentication, so a JID that maps to >1 active contact is ambiguous and
+  // MUST fail closed — the schema does not make direct_chat_jid unique, and
+  // `.get()` would silently route the first row (impersonation risk). Use
+  // `.all()` and bail on ambiguity.
+  let contact: { external_id: string; display_name: string; phone: string } | undefined;
+  const jidMatches = db
     .prepare(
       `SELECT external_id, display_name, phone FROM external_contacts
        WHERE direct_chat_jid = ? AND status = 'active'`,
     )
-    .get(dmJid) as { external_id: string; display_name: string; phone: string } | undefined;
+    .all(dmJid) as Array<{ external_id: string; display_name: string; phone: string }>;
+  if (jidMatches.length > 1) return null;
+  if (jidMatches.length === 1) contact = jidMatches[0];
 
   // 2. Fallback: extract phone from JID and match. RC5-ext: the stored phone may
   // differ from the inbound JID only by the BR mobile 9th digit (12- vs 13-digit

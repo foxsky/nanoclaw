@@ -166,4 +166,15 @@ describe('resolveExternalDm', () => {
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).toBeNull();
   });
+
+  it('RC5-ext (P2): fails closed when the SAME direct_chat_jid is registered to two active contacts', () => {
+    // Identity = authentication: a JID that resolves to two distinct externals is
+    // ambiguous and MUST NOT silently pick the first row (the schema does not make
+    // direct_chat_jid unique). The exact-JID fast path must fail closed, not route.
+    db.exec(
+      `INSERT INTO external_contacts VALUES ('ext-dup', 'Impostor', '5585777770000', '5585999991234@s.whatsapp.net', 'active', '2026-01-01', '2026-01-01', NULL)`,
+    );
+    const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
+    expect(result).toBeNull();
+  });
 });
