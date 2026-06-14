@@ -131,8 +131,22 @@ export async function resolveUnroutedExternalDm(
     return handleCrossBoardDisambiguation(mg, route, text, event, ctx);
   }
 
-  // Single-board: every grant is on one board (needsDisambiguation is board-keyed).
-  return routeExternalIntoBoard(route.groupJid, route.grants[0].boardId, route, mg, event, text, ctx);
+  // Single-board now. If a parked entry survives (grants collapsed from multi- to
+  // single-board between prompt and reply), a bare numeric reply was a selection
+  // for the OLD multi-board prompt — consume it host-side, never forward the bare
+  // "2" as board content. Then clear the stale parked state and route normally.
+  const stale = getParkedDisambiguation(mg.id, route.externalId);
+  if (stale) {
+    clearParkedDisambiguation(mg.id);
+    if (parseDisambiguationChoice(text, stale.choices)) {
+      log.info('rc5-ext inbound: stale disambiguation selection after grants collapsed — consumed', ctx);
+      return true;
+    }
+  }
+
+  // Every grant is on one board (needsDisambiguation is board-keyed).
+  const g = route.grants[0];
+  return routeExternalIntoBoard(g.groupJid, g.boardId, g.groupFolder, route, mg, event, text, ctx);
 }
 
 /**
@@ -159,7 +173,8 @@ async function handleCrossBoardDisambiguation(
   if (entry?.chosen) {
     if (liveBoardIds.has(entry.chosen.boardId)) {
       bindParkedChoice(mg.id, route.externalId, entry.chosen); // refresh TTL
-      return routeExternalIntoBoard(entry.chosen.groupJid, entry.chosen.boardId, route, mg, event, text, ctx);
+      const live = route.grants.find((gr) => gr.boardId === entry.chosen!.boardId)!;
+      return routeExternalIntoBoard(live.groupJid, live.boardId, live.groupFolder, route, mg, event, text, ctx);
     }
     clearParkedDisambiguation(mg.id); // bound board no longer granted → re-disambiguate
   }
@@ -209,6 +224,7 @@ async function handleCrossBoardDisambiguation(
 async function routeExternalIntoBoard(
   groupJid: string,
   boardId: string,
+  groupFolder: string,
   route: DmRouteResult,
   mg: MessagingGroup,
   event: InboundEvent,
@@ -220,11 +236,28 @@ async function routeExternalIntoBoard(
     log.error('rc5-ext inbound: no messaging_group for grant group_jid — not routing', { ...ctx, groupJid });
     return false;
   }
-  const agents = getMessagingGroupAgents(boardMg.id);
-  if (agents.length === 0) {
+  const allAgents = getMessagingGroupAgents(boardMg.id);
+  if (allAgents.length === 0) {
     log.error('rc5-ext inbound: board messaging_group has no wired agents — not routing', {
       ...ctx,
       boardMgId: boardMg.id,
+    });
+    return false;
+  }
+  // Board-scope the target. `boards.group_jid` is NOT unique, so two distinct
+  // boards (distinct agent groups) can share one messaging_group. With a single
+  // wired agent there's no ambiguity (and no drift risk). With MULTIPLE, route
+  // ONLY to the agent group whose folder matches the chosen board's group_folder
+  // — never fan out to a co-wired board's agent the external isn't acting on.
+  const agents =
+    allAgents.length === 1
+      ? allAgents
+      : allAgents.filter((a) => getAgentGroup(a.agent_group_id)?.folder === groupFolder);
+  if (agents.length === 0) {
+    log.error('rc5-ext inbound: shared-group mg — no wired agent matches the chosen board folder — not routing', {
+      ...ctx,
+      boardMgId: boardMg.id,
+      groupFolder,
     });
     return false;
   }

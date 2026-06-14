@@ -211,9 +211,20 @@ function setupLaunchd(
     PROJECT_PATH: projectRoot,
     PLIST_PATH: plistPath,
     SERVICE_LOADED: serviceLoaded,
-    STATUS: 'success',
+    STATUS: serviceLoaded ? 'success' : 'failed',
     LOG: 'logs/setup.log',
   });
+
+  // Same fail-loud contract as the systemd path: if the plist loaded but the
+  // label isn't actually present in `launchctl list`, the service didn't start —
+  // throw so the step exits non-zero and callers roll back rather than flip the
+  // cutover to a dead v2 (Codex pre-cutover BLOCKER).
+  if (!serviceLoaded) {
+    throw new Error(
+      `${label} was installed but did not appear in launchctl list — ` +
+        `inspect the plist's program args and logs before switching to v2`,
+    );
+  }
 }
 
 function setupLinux(
@@ -418,9 +429,22 @@ WantedBy=${runningAsRoot ? 'multi-user.target' : 'default.target'}`;
     SERVICE_LOADED: serviceLoaded,
     ...(dockerGroupStale ? { DOCKER_GROUP_STALE: true } : {}),
     LINGER_ENABLED: !runningAsRoot,
-    STATUS: 'success',
+    STATUS: serviceLoaded ? 'success' : 'failed',
     LOG: 'logs/setup.log',
   });
+
+  // The unit was written + enabled, but `systemctl is-active` reports it is NOT
+  // running (failed ExecStart, missing dist, crash-on-boot). Previously this
+  // path still emitted STATUS:success and exited 0 — which let migrate-v2.sh mark
+  // the cutover "switched" and disable v1, leaving production DOWN with v2 not
+  // serving (Codex pre-cutover BLOCKER). Fail loud: throw so the step exits
+  // non-zero and callers roll back to v1 instead of trusting a dead unit.
+  if (!serviceLoaded) {
+    throw new Error(
+      `${unitName} was installed but did not become active (systemctl is-active failed) — ` +
+        `inspect the unit's ExecStart and logs before switching to v2`,
+    );
+  }
 }
 
 function setupNohupFallback(

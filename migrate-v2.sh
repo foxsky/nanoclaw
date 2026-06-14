@@ -140,6 +140,11 @@ cleanup_on_exit() {
      && [ "$SERVICE_SWITCHED" = "false" ] \
      && [ "$ROLLBACK_DONE" = "false" ]; then
     step_fail "Migration interrupted with v1 stopped — restoring v1"
+    # If the interrupt landed during the service step (after the v2 unit was
+    # enabled but before the explicit rollback branches ran), stop+disable it
+    # too, or Restart=always would race v1 (Codex MEDIUM). V2_SERVICE is computed
+    # at script start; no-op if the unit was never enabled.
+    stop_disable_v2 "$V2_SERVICE"
     rollback_to_v1_no_v2
     mark_degraded "migration interrupted after v1 was stopped — v1 restored automatically; review logs/migrate-v2.log"
   fi
@@ -509,6 +514,31 @@ rollback_to_v1_no_v2() {
       step_fail "Could not move v2 taskflow.db aside — future migrate-v2.sh reruns will skip the TaskFlow copy"
       mark_degraded "stale v2 taskflow.db remains at data/taskflow/taskflow.db — remove manually before re-running migrate-v2.sh"
     fi
+  fi
+}
+
+# Stop + disable a v2 unit that a FAILED service install left ENABLED. The
+# service step writes + enables the unit before checking is-active, and the unit
+# carries Restart=always — so a failed/inactive v2 left enabled would keep
+# retrying and could come up later and race v1 after we roll back (split-brain,
+# Codex HIGH). Mirrors the operator-revert cleanup. Best-effort + idempotent.
+stop_disable_v2() {
+  local unit="$1"
+  [ -n "$unit" ] || return 0
+  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    # Scope must match how setup/service.ts installed the unit: root → a SYSTEM
+    # unit (plain systemctl, root manages it directly); non-root → a --user unit.
+    # A user-only cleanup would leave a root-installed system unit enabled +
+    # Restart=always after rollback → split-brain (Codex root-run path).
+    if [ "$(id -u)" = "0" ]; then
+      systemctl stop "$unit" 2>/dev/null || true
+      systemctl disable "$unit" 2>/dev/null || true
+    else
+      systemctl --user stop "$unit" 2>/dev/null || true
+      systemctl --user disable "$unit" 2>/dev/null || true
+    fi
+  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    launchctl unload "$HOME/Library/LaunchAgents/${unit}.plist" 2>/dev/null || true
   fi
 }
 
@@ -924,6 +954,26 @@ echo
 step_ok "Phase 3 complete"
 echo
 
+# Pre-switchover gate (Codex pre-cutover HIGH): do NOT flip live prod to v2 if any
+# step is recorded "failed". The runbook requires all DB/group/session/task/
+# TaskFlow/container steps green before switchover; a failed step (e.g. 3e-build,
+# 3b-onecli, 3c-auth) must block the flip rather than leave a half-migrated v2
+# serving production. (1d/1e/1f already abort earlier; this catches the Phase 3
+# infra steps that only record "failed" without aborting.)
+FAILED_STEPS=""
+for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
+  [ "${STEP_STATUSES[$i]}" = "failed" ] && FAILED_STEPS="$FAILED_STEPS ${STEP_NAMES[$i]}"
+done
+if [ -n "$FAILED_STEPS" ]; then
+  echo
+  step_fail "Not switching to v2 — failed step(s):$FAILED_STEPS"
+  echo "  $(dim 'Fix the failure(s) above, then re-run migrate-v2.sh — not flipping live prod to a half-migrated v2.')"
+  if [ "$V1_WAS_RUNNING" = "true" ]; then
+    rollback_to_v1_no_v2
+  fi
+  abort "pre-switchover-failed-steps"
+fi
+
 # ─── service switchover ─────────────────────────────────────────────────
 
 echo "$(bold 'Service switchover')"
@@ -1008,13 +1058,31 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
         V2_SERVICE=$(grep '^SERVICE_LABEL:' "$V2_SERVICE_LOG" | head -1 | sed 's/^SERVICE_LABEL: *//')
       fi
-      step_ok "v2 service installed and started $(dim "($V2_SERVICE)")"
-      SERVICE_SWITCHED=true
+      # Defense-in-depth (Codex BLOCKER): the service step now exits non-zero when
+      # the unit didn't become active, so reaching this branch should mean it's
+      # running. Independently confirm SERVICE_LOADED=true before declaring the
+      # switch done — a future regression in the step must NOT silently strand v1
+      # down with v2 not serving.
+      V2_SERVICE_LOADED=$(grep '^SERVICE_LOADED:' "$V2_SERVICE_LOG" | head -1 | sed 's/^SERVICE_LOADED: *//')
+      if [ "$V2_SERVICE_LOADED" = "true" ]; then
+        step_ok "v2 service installed and started $(dim "($V2_SERVICE)")"
+        SERVICE_SWITCHED=true
+      else
+        step_fail "v2 service installed but NOT active $(dim "(SERVICE_LOADED=$V2_SERVICE_LOADED; see $V2_SERVICE_LOG)") — rolling back to v1"
+        stop_disable_v2 "$V2_SERVICE"
+        rollback_to_v1_no_v2
+        record_step "service-install" "failed"
+        mark_degraded "v2 service did not start — diagnose with 'pnpm exec tsx setup/index.ts --step service', then re-run migrate-v2.sh"
+      fi
     else
       # v2 install failed and v1 is still down from pre-copy. Don't strand
-      # the operator: restart v1, move v2 taskflow.db aside, leave a clear
-      # failure trail. SERVICE_SWITCHED stays false so the keep/revert
-      # prompt is skipped.
+      # the operator: stop+disable any v2 unit the failed step already enabled
+      # (Restart=always would otherwise keep retrying and race v1), restart v1,
+      # move v2 taskflow.db aside, leave a clear failure trail. SERVICE_SWITCHED
+      # stays false so the keep/revert prompt is skipped.
+      FAILED_V2_UNIT=$(grep '^SERVICE_UNIT:' "$V2_SERVICE_LOG" | head -1 | sed 's/^SERVICE_UNIT: *//')
+      [ -n "$FAILED_V2_UNIT" ] || FAILED_V2_UNIT=$(grep '^SERVICE_LABEL:' "$V2_SERVICE_LOG" | head -1 | sed 's/^SERVICE_LABEL: *//')
+      stop_disable_v2 "$FAILED_V2_UNIT"
       step_fail "Could not start v2 service $(dim "(see $V2_SERVICE_LOG)") — rolling back to v1"
       rollback_to_v1_no_v2
       record_step "service-install" "failed"
@@ -1034,14 +1102,9 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       rm -f "$KEEP_ANSWER_FILE"
 
       if [ "$KEEP_ANSWER" = "revert" ]; then
-        # Stop v2 first, then use the shared rollback helper for v1 restart
-        # + taskflow.db move-aside.
-        if [ "$PLATFORM_SERVICE" = "systemd" ] && [ -n "$V2_SERVICE" ]; then
-          systemctl --user stop "$V2_SERVICE" 2>/dev/null || true
-          systemctl --user disable "$V2_SERVICE" 2>/dev/null || true
-        elif [ "$PLATFORM_SERVICE" = "launchd" ] && [ -n "$V2_SERVICE" ]; then
-          launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist 2>/dev/null || true
-        fi
+        # Stop + disable v2 (scope-aware), then use the shared rollback helper
+        # for v1 restart + taskflow.db move-aside.
+        stop_disable_v2 "$V2_SERVICE"
         rollback_to_v1_no_v2
         step_ok "Reverted to v1 service"
         SERVICE_SWITCHED=false
@@ -1185,10 +1248,17 @@ echo "    $(green '✓')  Service switched to v2 $(dim "($V2_SERVICE)")"
 echo
 echo "  $(bold 'Rollback to v1:')"
 if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-  if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-echo "    $(dim '$') systemctl --user stop $V2_SERVICE && sudo systemctl start $V1_SERVICE"
+  # v2 stop+disable scope matches the install (root → system unit; else --user) —
+  # disable too, or Restart=always brings v2 back. v1 start uses its detected scope.
+  if [ "$(id -u)" = "0" ]; then
+    V2_REVERT="systemctl stop $V2_SERVICE && systemctl disable $V2_SERVICE"
   else
-echo "    $(dim '$') systemctl --user stop $V2_SERVICE && systemctl --user start $V1_SERVICE"
+    V2_REVERT="systemctl --user stop $V2_SERVICE && systemctl --user disable $V2_SERVICE"
+  fi
+  if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+echo "    $(dim '$') $V2_REVERT && sudo systemctl start $V1_SERVICE"
+  else
+echo "    $(dim '$') $V2_REVERT && systemctl --user start $V1_SERVICE"
   fi
 elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
 echo "    $(dim '$') launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist && launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist"

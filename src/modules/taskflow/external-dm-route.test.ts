@@ -19,7 +19,7 @@ import {
   createMessagingGroupAgent,
 } from '../../db/index.js';
 import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
-import { findSession } from '../../db/sessions.js';
+import { findSession, findSessionForAgent } from '../../db/sessions.js';
 import { inboundDbPath } from '../../session-manager.js';
 import type { ChannelAdapter, InboundEvent } from '../../channels/adapter.js';
 import type { MessagingGroup } from '../../types.js';
@@ -294,6 +294,36 @@ describe('resolveUnroutedExternalDm — same-board route', () => {
     expect(ok).toBe(false);
     expect(boardInboundRows()).toHaveLength(0);
   });
+
+  it('board-scopes routing: a second board sharing the group_jid does NOT receive the message (B2)', async () => {
+    // boards.group_jid is not unique — wire a SECOND agent group (team-beta) to
+    // the SAME board messaging_group. The external's grant is on board-1
+    // (group_folder team-alpha), so only ag-board may receive the row.
+    createAgentGroup({ id: 'ag-beta', name: 'Beta', folder: 'team-beta', agent_provider: null, created_at: now() });
+    createMessagingGroupAgent({
+      id: 'mga-beta',
+      messaging_group_id: 'mg-board',
+      agent_group_id: 'ag-beta',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+
+    const ok = await route();
+    expect(ok).toBe(true);
+    // routed ONLY to the team-alpha board agent's session
+    const alpha = findSessionForAgent('ag-board', 'mg-board', null);
+    const alphaDb = new Database(inboundDbPath('ag-board', alpha!.id));
+    expect(alphaDb.prepare('SELECT * FROM messages_in').all()).toHaveLength(1);
+    alphaDb.close();
+    // the team-beta agent (co-wired to the same group) gets NOTHING — no session
+    // was even resolved for it.
+    expect(findSessionForAgent('ag-beta', 'mg-board', null)).toBeUndefined();
+  });
 });
 
 describe('resolveUnroutedExternalDm — cross-board host-parked disambiguation', () => {
@@ -337,6 +367,18 @@ describe('resolveUnroutedExternalDm — cross-board host-parked disambiguation',
     expect(JSON.parse(rows[0].content).text).toBe('I can do 3pm instead');
     expect(JSON.parse(rows[0].content).externalActor.externalId).toBe('ext-1');
     expect(mockWhatsApp!.deliver).not.toHaveBeenCalled();
+  });
+
+  it('consumes a stale numeric selection when grants collapse to one board between prompt and reply (I1)', async () => {
+    addSecondBoardGrant();
+    await route(coldDmMg(), dmEvent('hi')); // prompt + park (2 boards)
+    // board-2's grant is revoked before the external replies → single board now
+    tfDb.exec(`UPDATE meeting_external_participants SET invite_status = 'revoked' WHERE board_id = 'board-2'`);
+
+    const ok = await route(coldDmMg(), dmEvent('2')); // stale pick for the old prompt
+    expect(ok).toBe(true);
+    // the bare "2" must NOT be forwarded as content to the remaining board
+    expect(boardInboundRows()).toHaveLength(0);
   });
 
   it('re-prompts on an unparseable selection (no valid number), still consuming', async () => {
