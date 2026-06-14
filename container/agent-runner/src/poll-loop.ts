@@ -37,6 +37,12 @@ import {
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { addTurnActorSenders, clearTurnActor, setTurnActor } from './mcp-tools/turn-actor.js';
 import {
+  addTurnExternalActorEntries,
+  clearTurnExternalActor,
+  setTurnExternalActor,
+  type ExternalActorContext,
+} from './mcp-tools/turn-external-actor.js';
+import {
   drainAndDispatchPendingNotifications,
   enqueueDeferredNotificationsInSession,
 } from './mcp-tools/pending-notification-dispatch.js';
@@ -1480,6 +1486,50 @@ function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: bo
   // an ambiguous chat turn — and a read-failure can never look like a system turn.
   const system = cmd.length > 0 && !anyChat;
   return { senders, poison, system };
+}
+
+/**
+ * RC5-ext P3 — parse a host-authenticated EXTERNAL actor off a routed row.
+ * The host resolver writes `content.actorKind:'external'` + `content.externalActor`
+ * ({externalId, displayName, sourceDmMgId, boardId}) and NO `content.sender`.
+ * Returns the context iff externalId is present; otherwise null.
+ */
+function parseExternalActor(message: Pick<MessageInRow, 'kind' | 'content'>): ExternalActorContext | null {
+  if (message.kind !== 'chat' && message.kind !== 'chat-sdk') return null;
+  const content = parseJsonContent(message.content);
+  if (content.actorKind !== 'external') return null;
+  const ea = content.externalActor;
+  if (!ea || typeof ea !== 'object') return null;
+  const e = ea as Record<string, unknown>;
+  const externalId = typeof e.externalId === 'string' ? e.externalId.trim() : '';
+  if (!externalId) return null;
+  return {
+    externalId,
+    displayName: typeof e.displayName === 'string' ? e.displayName : '',
+    sourceDmMgId: typeof e.sourceDmMgId === 'string' ? e.sourceDmMgId : '',
+    boardId: typeof e.boardId === 'string' ? e.boardId : '',
+  };
+}
+
+/**
+ * RC5-ext P3 — derive the per-turn EXTERNAL actors, mirroring turnActorSenders.
+ * An external row carries no `content.sender`, so turnActorSenders already
+ * POISONS `turn_actor` for it (a chat row with no authenticated sender). This
+ * channel resolves ONLY for a PURE external turn: any co-batched non-external
+ * trigger row (a board-person chat, a system/scheduled row) sets poison —
+ * enforcing board-person XOR external per turn. Two distinct externals are both
+ * kept so getTurnExternalActor sees >1 and stays unresolved (over-auth defeat).
+ */
+export function turnExternalActors(rows: MessageInRow[]): { externals: ExternalActorContext[]; poison: boolean } {
+  const cmd = selectCommandRows(rows);
+  const externals: ExternalActorContext[] = [];
+  let poison = false;
+  for (const row of cmd) {
+    const ext = parseExternalActor(row);
+    if (ext) externals.push(ext);
+    else poison = true; // a non-external trigger row co-batched → the external turn is impure
+  }
+  return { externals, poison };
 }
 
 function extractTaskId(text: string): string | null {
@@ -4726,6 +4776,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // chat sender → bound; mixed / system / poisoned batch → unresolved → deny.
     const initialActor = turnActorSenders(keep);
     setTurnActor(initialActor.senders, initialActor.poison, initialActor.system);
+    // RC5-ext P3: pin the parallel EXTERNAL-actor channel. A pure external turn
+    // (host-authenticated externalActor row, no sender) resolves here while
+    // turn_actor stays poisoned (no sender) — board-person XOR external per turn.
+    const initialExternal = turnExternalActors(keep);
+    setTurnExternalActor(initialExternal.externals, initialExternal.poison);
 
     const query = config.provider.query({
       prompt: promptWithContext,
@@ -4795,6 +4850,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // does not read the actor, and the next model turn overwrites it before
     // querying — so a stale value is harmless, but clearing keeps the channel honest).
     clearTurnActor();
+    // RC5-ext P3 (C3-lifecycle/B7): clear the external-actor channel at the same
+    // unconditional turn boundary so no stale external identity carries authority
+    // or external-safe capability mode into a later turn.
+    clearTurnExternalActor();
     // #396: deliver any deferred cross-board notifications whose assignee's child
     // board has since provisioned (JID now resolves). Opportunistic per-turn drain
     // — no-op for non-taskflow boards. Within the 5-min TTL, V1 best-effort parity.
@@ -5046,6 +5105,10 @@ async function processQuery(
         const prompt = formatMessages(keep);
         const followupActor = turnActorSenders(keep);
         addTurnActorSenders(followupActor.senders, followupActor.poison, followupActor.system);
+        // RC5-ext P3: accumulate the external-actor channel too — a follow-up that
+        // mixes a board sender or a second external in makes the turn unresolved.
+        const followupExternal = turnExternalActors(keep);
+        addTurnExternalActorEntries(followupExternal.externals, followupExternal.poison);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
         markCompleted(keptIds);
