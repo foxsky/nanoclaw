@@ -49,6 +49,7 @@ import { log } from '../../log.js';
 import { resolveSession, writeSessionMessage } from '../../session-manager.js';
 import type { MessagingGroup } from '../../types.js';
 import { createDestination, getDestinationByName, normalizeName } from '../agent-to-agent/db/agent-destinations.js';
+import { writeDestinations } from '../agent-to-agent/write-destinations.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import type { DmRouteResult } from '../../dm-routing.js';
 import {
@@ -103,6 +104,11 @@ export async function resolveUnroutedExternalDm(
   event: InboundEvent,
   deps: ExternalDmRouteDeps = {},
 ): Promise<boolean> {
+  // External identity is authenticated by WhatsApp JID. A non-WhatsApp DM whose
+  // platform_id happens to equal a stored phone/JID must NOT be authenticated as
+  // that external — gate to WhatsApp DM rows before touching resolveExternalDm.
+  if (mg.channel_type !== 'whatsapp') return false;
+
   const db = deps.taskflowDb ?? getTaskflowDb(DATA_DIR);
   if (!db) return false; // no taskflow.db → not a taskflow install / unreadable → fall through
 
@@ -125,7 +131,8 @@ export async function resolveUnroutedExternalDm(
     return handleCrossBoardDisambiguation(mg, route, text, event, ctx);
   }
 
-  return routeExternalIntoBoard(route.groupJid, route, mg, event, text, ctx);
+  // Single-board: every grant is on one board (needsDisambiguation is board-keyed).
+  return routeExternalIntoBoard(route.groupJid, route.grants[0].boardId, route, mg, event, text, ctx);
 }
 
 /**
@@ -142,24 +149,28 @@ async function handleCrossBoardDisambiguation(
   event: InboundEvent,
   ctx: Record<string, unknown>,
 ): Promise<boolean> {
+  const liveBoardIds = new Set(route.grants.map((g) => g.boardId));
   const choices = buildDisambiguationChoices(route.grants);
   const entry = getParkedDisambiguation(mg.id, route.externalId);
 
   // Already bound to a board: route there, but only while that board is still
   // in the external's CURRENT grants (a revoked grant clears the binding).
+  // Re-validate by board_id (group_jid is not unique).
   if (entry?.chosen) {
-    if (route.grants.some((g) => g.groupJid === entry.chosen!.groupJid)) {
+    if (liveBoardIds.has(entry.chosen.boardId)) {
       bindParkedChoice(mg.id, route.externalId, entry.chosen); // refresh TTL
-      return routeExternalIntoBoard(entry.chosen.groupJid, route, mg, event, text, ctx);
+      return routeExternalIntoBoard(entry.chosen.groupJid, entry.chosen.boardId, route, mg, event, text, ctx);
     }
     clearParkedDisambiguation(mg.id); // bound board no longer granted → re-disambiguate
   }
 
-  // Awaiting a selection: try to read one. A valid pick binds the board and is
-  // CONSUMED host-side (the bare "2" is never forwarded as board content).
+  // Awaiting a selection: read it against the choices THAT WERE SHOWN (the
+  // parked entry's choices), not freshly-rebuilt ones — if grants shifted
+  // between prompt and reply, "2" must still mean the board the user saw as #2.
+  // Then re-validate that board is still in the live grant set before binding.
   if (entry && !entry.chosen) {
-    const pick = parseDisambiguationChoice(text, choices);
-    if (pick) {
+    const pick = parseDisambiguationChoice(text, entry.choices);
+    if (pick && liveBoardIds.has(pick.boardId)) {
       bindParkedChoice(mg.id, route.externalId, pick);
       log.info('rc5-ext inbound: external selected a board — consumed host-side, follow-ups route there', {
         ...ctx,
@@ -169,7 +180,7 @@ async function handleCrossBoardDisambiguation(
     }
   }
 
-  // No entry, or an unparseable selection: (re)send the prompt and park.
+  // No entry, or an unparseable/stale selection: (re)send the prompt and park.
   const adapter = getChannelAdapter('whatsapp');
   if (adapter?.deliver) {
     try {
@@ -197,6 +208,7 @@ async function handleCrossBoardDisambiguation(
  */
 async function routeExternalIntoBoard(
   groupJid: string,
+  boardId: string,
   route: DmRouteResult,
   mg: MessagingGroup,
   event: InboundEvent,
@@ -222,6 +234,8 @@ async function routeExternalIntoBoard(
     const ag = getAgentGroup(agent.agent_group_id);
     if (!ag) continue;
 
+    const { session } = resolveSession(agent.agent_group_id, boardMg.id, null, agent.session_mode);
+
     if (!ensureExternalReplyDestination(agent.agent_group_id, route.externalId, mg.id)) {
       log.error('rc5-ext inbound: reply-destination name collision on a different target — not routing', {
         ...ctx,
@@ -229,26 +243,36 @@ async function routeExternalIntoBoard(
       });
       continue; // fail closed for this agent; never repoint an existing destination
     }
-
-    const { session } = resolveSession(agent.agent_group_id, boardMg.id, null, agent.session_mode);
+    // Refresh the running container's destination projection so the formatter
+    // can resolve `from="external-<id>"` and the agent can address the external
+    // by name THIS turn — a central-table write alone leaves a live container
+    // serving a stale projection (agent-destinations.ts top-of-file invariant).
+    writeDestinations(agent.agent_group_id, session.id);
 
     writeSessionMessage(session.agent_group_id, session.id, {
       id: `rc5ext:${event.message.id}:${agent.agent_group_id}`,
       kind: 'chat',
       timestamp: event.message.timestamp,
       // Delivery address = the EXTERNAL's cold-DM mg: a default reply goes back
-      // to the external, never leaked to the board group.
+      // to the external, never leaked to the board group. NOTE: this isolates
+      // the reply target for a PURE external turn. If a board-group message and
+      // this external row land in the SAME poll batch, the container's
+      // extractRouting (first-row wins) could still cross-contaminate routing —
+      // P3 must enforce per-turn actor/routing isolation (mixed turn ⇒ no shared
+      // reply target), part of the "board-person XOR external per turn" rule.
       platformId: mg.platform_id,
       channelType: mg.channel_type,
       threadId: null,
       content: JSON.stringify({
         text,
-        // AUTH carries ONLY externalId; displayName/sourceDmMgId are context.
+        // AUTH carries ONLY externalId; displayName/sourceDmMgId/boardId are
+        // context (boardId scopes the engine's per-meeting grant re-check in P3).
         // NO `sender` — the container must not bind this as a board person.
         externalActor: {
           externalId: route.externalId,
           displayName: route.displayName,
           sourceDmMgId: mg.id,
+          boardId,
         },
         actorKind: 'external',
         from: `external-${route.externalId}`,
@@ -265,6 +289,7 @@ async function routeExternalIntoBoard(
       agentGroupId: agent.agent_group_id,
       sessionId: session.id,
       boardMgId: boardMg.id,
+      boardId,
     });
   }
 

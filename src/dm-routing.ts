@@ -135,13 +135,15 @@ export function resolveExternalDm(db: Database.Database, dmJid: string): DmRoute
 
   if (active.length === 0) return null;
 
-  // 5. Disambiguation is only needed when grants span multiple distinct groups,
-  // because the orchestrator must pick a single group to route to. Multiple
-  // grants on the *same* group (e.g., invited to M1 and M2 on one board) are
-  // fine — the agent receives all grant IDs in the context tag and can resolve
-  // which meeting the user means from message content.
+  // 5. Disambiguation is needed when grants span multiple distinct BOARDS.
+  // Keying on board_id, not group_jid: `boards.group_jid` is NOT schema-unique,
+  // so two distinct boards can share one WhatsApp group. Using group_jid would
+  // let a second board's grant slip past disambiguation and route via active[0]
+  // into the first board's session. Multiple grants on the *same* board (e.g.,
+  // invited to M1 and M2) stay non-ambiguous — the agent resolves which meeting
+  // from message content; the engine re-checks per-meeting at mutation time.
   const primary = active[0];
-  const distinctGroups = new Set(active.map((g) => g.group_jid));
+  const distinctBoards = new Set(active.map((g) => g.board_id));
   return {
     externalId: contact.external_id,
     displayName: contact.display_name,
@@ -156,6 +158,6 @@ export function resolveExternalDm(db: Database.Database, dmJid: string): DmRoute
       groupJid: g.group_jid,
       groupFolder: g.group_folder,
     })),
-    needsDisambiguation: distinctGroups.size > 1,
+    needsDisambiguation: distinctBoards.size > 1,
   };
 }

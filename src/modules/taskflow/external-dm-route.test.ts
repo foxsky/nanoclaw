@@ -235,7 +235,12 @@ describe('resolveUnroutedExternalDm — same-board route', () => {
     // AUTH = externalId only; NO board-person `sender`.
     expect(c.sender).toBeUndefined();
     expect(c.actorKind).toBe('external');
-    expect(c.externalActor).toEqual({ externalId: 'ext-1', displayName: 'Maria', sourceDmMgId: 'mg-cold-ext1' });
+    expect(c.externalActor).toEqual({
+      externalId: 'ext-1',
+      displayName: 'Maria',
+      sourceDmMgId: 'mg-cold-ext1',
+      boardId: 'board-1',
+    });
     expect(c.from).toBe('external-ext-1');
     expect(c.text).toBe('sure, 2pm works');
     // Reply address = the EXTERNAL's cold-DM mg, not the board group.
@@ -277,6 +282,15 @@ describe('resolveUnroutedExternalDm — same-board route', () => {
 
   it('returns false on empty text (does not route an empty external turn)', async () => {
     const ok = await route(coldDmMg(), dmEvent('   '));
+    expect(ok).toBe(false);
+    expect(boardInboundRows()).toHaveLength(0);
+  });
+
+  it('FAIL-CLOSED: a non-WhatsApp DM whose platform_id equals the external phone is NOT authenticated', async () => {
+    // External identity is a WhatsApp JID; a telegram/signal DM that happens to
+    // carry a matching platform_id must never be authed as the external.
+    const mg = { ...coldDmMg(), channel_type: 'telegram' } as MessagingGroup;
+    const ok = await route(mg, dmEvent());
     expect(ok).toBe(false);
     expect(boardInboundRows()).toHaveLength(0);
   });

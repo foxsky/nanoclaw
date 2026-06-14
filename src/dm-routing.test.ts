@@ -124,6 +124,21 @@ describe('resolveExternalDm', () => {
     expect(result!.needsDisambiguation).toBe(true);
   });
 
+  it('flags needsDisambiguation when two distinct boards SHARE one group_jid (board-keyed, not group-keyed)', () => {
+    // boards.group_jid is not schema-unique; a second board reusing the same
+    // WhatsApp group must still disambiguate, or its grant would slip past and
+    // route via active[0] into the first board's session.
+    db.exec(
+      `INSERT INTO boards VALUES ('board-2', '120363408855255405@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`,
+    );
+    db.prepare(
+      `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-2', '2026-03-10', '2026-03-10')`,
+    ).run(futureExpiresAt());
+    const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
+    expect(result).not.toBeNull();
+    expect(result!.needsDisambiguation).toBe(true);
+  });
+
   it('does NOT flag needsDisambiguation for multiple meetings on the same board', () => {
     db.prepare(
       `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-1', '2026-03-10', '2026-03-10')`,
