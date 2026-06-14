@@ -28,8 +28,9 @@
  *     person via `turn_actor`. Grants are NOT carried as auth (the engine
  *     re-checks per-meeting at mutation time, P3/C4).
  *   - Cross-board grants are NEVER routed into a guessed board (would leak one
- *     board's inbound to another's agent). Same-board only here; cross-board
- *     is host-parked in P2.5.
+ *     board's inbound to another's agent). They drive a host-side parked
+ *     disambiguation (prompt → select → bind) instead — see
+ *     `parked-disambiguation.ts`.
  *   - The routed row's delivery address is the EXTERNAL's cold-DM mg, so a
  *     default reply goes back to the external, never leaked to the board group.
  *   - The reply destination (`external-<id>` → the cold-DM mg) is created
