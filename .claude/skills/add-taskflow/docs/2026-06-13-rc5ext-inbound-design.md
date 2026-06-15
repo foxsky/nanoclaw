@@ -149,8 +149,12 @@ Commit chain: `68f2acc4` (R1) · `8c107ba3` (R2) · R3 · R4. Host half clean af
   - **Fail-closed** on: malformed external+sender, >1 distinct external, external+board-command, external+**system** (checked on the raw `allPending`, R1 IMPORTANT-1), inconsistent reply target, or an unconfinable provider. Cleanup is failure-isolated (R1 IMPORTANT-2).
   - Tests: `confined-external.test.ts` (allowedTools restriction), `poll-loop-external-actor.test.ts` (`externalActorCommandRows`), `chat-actor-guard.test.ts` (C4b). Codex R1 = 3 BLOCKER + 2 IMPORTANT + 1 NICE, all fixed; R2 in progress.
 
-## Remaining before the resolver can be REGISTERED (un-DARK)
+## Go-live — DONE (registered in code, `156ac4dc`)
 - ~~Final Codex round on C4c clean.~~ DONE (R4 zero BLOCKER).
-- ~~**C6 formatter** (`actor_type=external_contact`, displayName).~~ DONE: `formatSingleChat` renders an `actorKind:'external'` row with the externalActor.displayName behind a non-authoritative `actor_type="external_contact"` marker (escaped; board rows unaffected). The reply target (`from="external-<id>"`) already came from `originAttr`/P2 `writeDestinations`.
-- **`setUnroutedDmResolver(resolveUnroutedExternalDm)`** in `modules/taskflow/index.ts` — the ONLY switch that takes the whole flow live. Until then everything above is DARK (no external row is ever written into a board session).
-- P4 e2e + the B7 "stale-actor send denied after turn" test + the deferred per-owner notification for external notes (Codex C4c-R4 IMPORTANT-2).
+- ~~**C6 formatter** (`actor_type=external_contact`, displayName).~~ DONE (`169cc358`).
+- ~~**P4 e2e** + B7 "stale-actor cleared after turn".~~ DONE (`9f3f6e71`): full confined turn through the real poll-loop, asserts confined provider + reply-to-cold-DM + statelessness + B7 clear + drained, plus a fail-closed-on-non-confining-provider case.
+- ~~**`setUnroutedDmResolver(resolveUnroutedExternalDm)`** in `modules/taskflow/index.ts`.~~ DONE (`156ac4dc`) — the flow is no longer DARK in code.
+- ~~Per-owner notification for external notes (Codex C4c-R4 IMPORTANT-2).~~ DONE (`156ac4dc`): an external's meeting note pings the assignee directly (airtight target, null-JID-safe).
+- Go-live Codex gpt-5.5/xhigh: zero BLOCKER/IMPORTANT — safe to enable, no leak, no arbitrary routing; 3 NICEs addressed.
+
+**ONLY remaining = DEPLOY** (firm-gated: never .63 / never deploy migration work pre-cutover / never push unless asked). In production the feature is inert until a deliberate deploy.
