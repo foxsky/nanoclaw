@@ -3124,6 +3124,7 @@ export class TaskflowEngine {
     task_id: string;
     sender_name: string;
     sender_is_service?: boolean;
+    sender_external_id?: string;
     text: string;
     parent_note_id?: number;
   }): TaskflowResult & { data?: Record<string, unknown> } {
@@ -3154,8 +3155,13 @@ export class TaskflowEngine {
           return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to add notes to this task` } as any;
         }
 
+        const senderExternalId = params.sender_external_id;
+        const isExternalSender = !!senderExternalId;
+        const hasExternalGrant = senderExternalId
+          ? this.hasMeetingExternalGrant(taskBoardId, task.id, senderExternalId)
+          : false;
         const out = this.addNoteCore(
-          { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined, now },
+          { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId, now },
           params.text,
           params.parent_note_id,
         );
@@ -3214,6 +3220,7 @@ export class TaskflowEngine {
     task_id: string;
     sender_name: string;
     sender_is_service?: boolean;
+    sender_external_id?: string;
     note_id: number;
     text: string;
   }): TaskflowResult & { data?: Record<string, unknown> } {
@@ -3234,8 +3241,13 @@ export class TaskflowEngine {
           return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to edit notes on this task` } as any;
         }
 
+        const senderExternalId = params.sender_external_id;
+        const isExternalSender = !!senderExternalId;
+        const hasExternalGrant = senderExternalId
+          ? this.hasMeetingExternalGrant(taskBoardId, task.id, senderExternalId)
+          : false;
         const out = this.editNoteCore(
-          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined },
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId },
           params.note_id,
           params.text,
         );
@@ -3262,6 +3274,7 @@ export class TaskflowEngine {
     task_id: string;
     sender_name: string;
     sender_is_service?: boolean;
+    sender_external_id?: string;
     note_id: number;
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
@@ -3281,8 +3294,13 @@ export class TaskflowEngine {
           return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to remove notes from this task` } as any;
         }
 
+        const senderExternalId = params.sender_external_id;
+        const isExternalSender = !!senderExternalId;
+        const hasExternalGrant = senderExternalId
+          ? this.hasMeetingExternalGrant(taskBoardId, task.id, senderExternalId)
+          : false;
         const out = this.removeNoteCore(
-          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined },
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId },
           params.note_id,
         );
         if (!out.success) {
@@ -5903,6 +5921,32 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   /** Context captured once per request, passed to each note helper. */
+  /**
+   * RC5-ext P3 (C4) — authoritative, per-meeting external-grant check, re-queried
+   * at MUTATION time (never trusted from the host channel, which carries only the
+   * authenticated externalId). A grant authorizes note ops ONLY for the exact
+   * (board, meeting task) and ONLY when `accepted` and not past `access_expires_at`
+   * — so a grant on meeting A can never act on meeting B, and an expired/revoked/
+   * pending grant cannot mutate. Fail closed on any error.
+   */
+  private hasMeetingExternalGrant(boardId: string, meetingTaskId: string, externalId: string): boolean {
+    try {
+      const now = new Date().toISOString();
+      const row = this.db
+        .prepare(
+          `SELECT 1 FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status = 'accepted'
+             AND (access_expires_at IS NULL OR access_expires_at > ?)
+           LIMIT 1`,
+        )
+        .get(boardId, meetingTaskId, externalId, now);
+      return !!row;
+    } catch {
+      return false;
+    }
+  }
+
   private addNoteCore(
     ctx: {
       task: any;

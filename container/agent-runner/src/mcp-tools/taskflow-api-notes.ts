@@ -47,6 +47,9 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
       task_id: parsed.taskId,
       sender_name: parsed.senderName,
       sender_is_service: parsed.senderIsService,
+      // RC5-ext (C4): the authenticated external id, bound channel-only by
+      // normalizeAgentIds (P3.3) — the engine re-checks the per-meeting grant.
+      sender_external_id: typeof args.sender_external_id === 'string' ? args.sender_external_id : undefined,
       text: args.text,
       parent_note_id: parentNoteId,
     });
@@ -108,6 +111,7 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
       task_id: parsed.taskId,
       sender_name: parsed.senderName,
       sender_is_service: parsed.senderIsService,
+      sender_external_id: typeof args.sender_external_id === 'string' ? args.sender_external_id : undefined,
       note_id: args.note_id,
       text: args.text,
     });
@@ -149,6 +153,7 @@ export const apiTaskRemoveNoteTool: McpToolDefinition = {
       task_id: parsed.taskId,
       sender_name: parsed.senderName,
       sender_is_service: parsed.senderIsService,
+      sender_external_id: typeof args.sender_external_id === 'string' ? args.sender_external_id : undefined,
       note_id: args.note_id,
     });
     if (

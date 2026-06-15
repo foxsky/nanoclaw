@@ -8448,3 +8448,80 @@ describe('admin: remove_child_board (#400 — replaces the raw-SQL escape hatch)
     expect(r.success).toBe(false);
   });
 });
+
+// RC5-ext P3 (C4) — engine re-checks the per-meeting external grant at MUTATION
+// time, keyed on (board, meeting task) + accepted + not-expired. The host channel
+// carries only the authenticated externalId; authorization is engine-authoritative.
+describe('RC5-ext (C4) — external meeting-note grant re-check', () => {
+  let db: Database;
+  let engine: TaskflowEngine;
+  const OCC = '2026-07-01T10:00:00Z';
+
+  function grant(meetingTaskId: string, status: string, expiresAt: string | null) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO meeting_external_participants
+       (board_id, meeting_task_id, occurrence_scheduled_at, external_id, invite_status, invited_at, accepted_at, revoked_at, access_expires_at, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, 'ext-1', ?, ?, ?, NULL, ?, 'person-1', ?, ?)`,
+    ).run(BOARD_ID, meetingTaskId, OCC, status, now, status === 'accepted' ? now : null, expiresAt, now, now);
+  }
+  function meeting(id: string) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, participants, created_at, updated_at)
+       VALUES (?, ?, 'meeting', 'Sync', 'next_action', '[]', ?, ?)`,
+    ).run(id, BOARD_ID, now, now);
+  }
+  const future = () => new Date(Date.now() + 7 * 86400_000).toISOString();
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID); // creates the RC5-ext tables
+    db.prepare(
+      `INSERT INTO external_contacts (external_id, display_name, phone, status, created_at, updated_at)
+       VALUES ('ext-1', 'Maria', '5585999991234', 'active', ?, ?)`,
+    ).run(new Date().toISOString(), new Date().toISOString());
+    meeting('M-1');
+    meeting('M-2');
+  });
+  afterEach(() => db.close());
+
+  function addNote(taskId: string) {
+    return engine.apiAddNote({ board_id: BOARD_ID, task_id: taskId, sender_name: '', sender_external_id: 'ext-1', text: 'on my way' }) as any;
+  }
+
+  it('ACCEPTED, non-expired grant → note added, attributed external_contact', () => {
+    grant('M-1', 'accepted', future());
+    const r = addNote('M-1');
+    expect(r.success).toBe(true);
+    const notes = JSON.parse((db.prepare(`SELECT notes FROM tasks WHERE id='M-1' AND board_id=?`).get(BOARD_ID) as any).notes);
+    expect(notes[0].author_actor_type).toBe('external_contact');
+    expect(notes[0].author_actor_id).toBe('ext-1');
+  });
+
+  it('NO grant → denied', () => {
+    expect(addNote('M-1').success).toBe(false);
+  });
+
+  it('REVOKED grant → denied', () => {
+    grant('M-1', 'revoked', future());
+    expect(addNote('M-1').success).toBe(false);
+  });
+
+  it('EXPIRED grant (access_expires_at past) → denied', () => {
+    grant('M-1', 'accepted', '2020-01-01T00:00:00Z');
+    expect(addNote('M-1').success).toBe(false);
+  });
+
+  it('PENDING/invited grant → denied (note-add requires accepted)', () => {
+    grant('M-1', 'invited', future());
+    expect(addNote('M-1').success).toBe(false);
+  });
+
+  it('per-MEETING: a grant on M-1 cannot add a note to M-2', () => {
+    grant('M-1', 'accepted', future());
+    expect(addNote('M-1').success).toBe(true);
+    expect(addNote('M-2').success).toBe(false);
+  });
+});
