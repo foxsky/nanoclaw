@@ -142,7 +142,9 @@ async function sweep(): Promise<void> {
     log.error('Host sweep error', { err });
   }
 
-  setTimeout(sweep, SWEEP_INTERVAL_MS);
+  // Re-check the stop flag before re-arming: a tick that completes after stopHostSweep() must not
+  // schedule one more sweep into already-torn-down state.
+  if (running) setTimeout(sweep, SWEEP_INTERVAL_MS);
 }
 
 async function sweepSession(session: Session): Promise<void> {

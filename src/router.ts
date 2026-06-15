@@ -30,7 +30,8 @@ import { findSessionForAgent } from './db/sessions.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
-import { wakeContainer } from './container-runner.js';
+import { isContainerRunning, wakeContainer } from './container-runner.js';
+import { getDeliveryAdapter } from './delivery.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 import type { InboundEvent } from './channels/adapter.js';
@@ -480,14 +481,32 @@ async function deliverToAgent(
       return;
     }
     if (gate.action === 'deny') {
-      writeOutboundDirect(session.agent_group_id, session.id, {
-        id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        kind: 'chat',
-        platformId: deliveryAddr.platformId,
-        channelType: deliveryAddr.channelType,
-        threadId: deliveryAddr.threadId,
-        content: JSON.stringify({ text: `Permission denied: ${gate.command} requires admin access.` }),
-      });
+      const denyText = `Permission denied: ${gate.command} requires admin access.`;
+      const adapter = getDeliveryAdapter();
+      // outbound.db is the running container's sole writer (journal_mode=DELETE). If a container is
+      // up, writing the deny there contends on the file lock (stall/drop) — so deliver it straight
+      // through the adapter instead. Only fall back to the outbound queue when no container is
+      // running (safe single-writer) and no adapter is available.
+      if (isContainerRunning(session.id) && adapter && deliveryAddr.platformId) {
+        adapter
+          .deliver(
+            deliveryAddr.channelType,
+            deliveryAddr.platformId,
+            deliveryAddr.threadId,
+            'chat',
+            JSON.stringify({ text: denyText }),
+          )
+          .catch((err) => log.error('Failed to deliver command-deny response', { command: gate.command, err }));
+      } else {
+        writeOutboundDirect(session.agent_group_id, session.id, {
+          id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind: 'chat',
+          platformId: deliveryAddr.platformId,
+          channelType: deliveryAddr.channelType,
+          threadId: deliveryAddr.threadId,
+          content: JSON.stringify({ text: denyText }),
+        });
+      }
       log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
       return;
     }

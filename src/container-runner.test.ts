@@ -1,14 +1,53 @@
+import { EventEmitter } from 'events';
+
 import { describe, expect, it, vi } from 'vitest';
 
+// stopContainer shells out to docker; stub it so killContainer can be unit-tested. Keep the rest.
+vi.mock('./container-runtime.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./container-runtime.js')>()),
+  stopContainer: vi.fn(),
+}));
+
 import {
+  __seedActiveContainerForTest,
   ensureAgentSecretMode,
   holidayExemptEnvArgs,
+  killContainer,
   memoryEnvArgs,
   replayContainerEnvArgs,
   resolveFlipMode,
   resolveProviderName,
   taskflowEmbedEnvArgs,
 } from './container-runner.js';
+
+describe('killContainer last-killer-wins (L4)', () => {
+  it('a later kill with no onExit cancels an earlier caller’s respawn callback', () => {
+    const proc = new EventEmitter() as unknown as import('child_process').ChildProcess;
+    (proc as unknown as { kill: () => void }).kill = vi.fn();
+    __seedActiveContainerForTest('sess-l4', proc, 'nanoclaw-l4');
+
+    const respawn = vi.fn();
+    killContainer('sess-l4', 'self-mod apply', respawn); // earlier caller wants a respawn
+    killContainer('sess-l4', 'stuck sweep'); // later caller wants it DEAD (no onExit)
+    (proc as unknown as EventEmitter).emit('close', 0);
+
+    // The stale respawn must NOT fire, and no 'close' listener should leak.
+    expect(respawn).not.toHaveBeenCalled();
+    expect((proc as unknown as EventEmitter).listenerCount('close')).toBe(0);
+  });
+
+  it('a single kill still runs its onExit on close (no regression)', () => {
+    const proc = new EventEmitter() as unknown as import('child_process').ChildProcess;
+    (proc as unknown as { kill: () => void }).kill = vi.fn();
+    __seedActiveContainerForTest('sess-l4b', proc, 'nanoclaw-l4b');
+
+    const respawn = vi.fn();
+    killContainer('sess-l4b', 'restart', respawn);
+    (proc as unknown as EventEmitter).emit('close', 0);
+
+    expect(respawn).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -222,7 +261,11 @@ describe('ensureAgentSecretMode', () => {
   it('keys dedup by id AND mode (a different requested mode is not falsely skipped)', async () => {
     // `selective` already done must NOT suppress an `all` request — they are distinct intents.
     const fetchImpl = okFetch();
-    await ensureAgentSecretMode('ag-1', 'all', { fetchImpl, flipped: new Set(['ag-1:selective']), inflight: new Map() });
+    await ensureAgentSecretMode('ag-1', 'all', {
+      fetchImpl,
+      flipped: new Set(['ag-1:selective']),
+      inflight: new Map(),
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchImpl.mock.calls[0][1]!.body as string)).toEqual({ id: 'ag-1', mode: 'all' });
   });
@@ -248,7 +291,8 @@ describe('ensureAgentSecretMode', () => {
     const flipped = new Set<string>();
     const inflight = new Map<string, Promise<void>>();
     const failing = vi.fn(
-      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]): Promise<Response> => new Response('nope', { status: 503 }),
+      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]): Promise<Response> =>
+        new Response('nope', { status: 503 }),
     );
     await expect(
       ensureAgentSecretMode('ag-1', 'all', { fetchImpl: failing, flipped, inflight }),

@@ -140,6 +140,12 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
               (row as Record<string, unknown>)[groupField] === ctx.agentGroupId,
           );
         } else if (data && typeof data === 'object' && groupField in (data as Record<string, unknown>)) {
+          // NOTE (audit I1, latent/INFO): when groupField is ABSENT this branch is skipped, so a
+          // single-row resource read whose rows lack the ownership field would return unfiltered.
+          // All four current allowlisted resources (groups/sessions/destinations/members) carry it,
+          // and action-ack responses legitimately lack it — so a blanket fail-closed here wrongly
+          // rejects valid acks. The correct hardening is a registration-time invariant that every
+          // group-scoped allowlisted RESOURCE declares an ownership field; deferred.
           if ((data as Record<string, unknown>)[groupField] !== ctx.agentGroupId) {
             return err(req.id, 'forbidden', 'Resource belongs to a different agent group.');
           }

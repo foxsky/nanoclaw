@@ -14,6 +14,7 @@
  */
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
+import { APT_PACKAGE_RE as APT_RE, NPM_PACKAGE_RE as NPM_RE } from '../../package-validation.js';
 import type { Session } from '../../types.js';
 import { notifyAgent, requestApproval } from '../approvals/index.js';
 
@@ -28,8 +29,6 @@ export async function handleInstallPackages(content: Record<string, unknown>, se
   const npm = (content.npm as string[]) || [];
   const reason = (content.reason as string) || '';
 
-  const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
-  const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
   const MAX_PACKAGES = 20;
   if (apt.length + npm.length === 0) {
     notifyAgent(session, 'install_packages failed: at least one apt or npm package is required.');

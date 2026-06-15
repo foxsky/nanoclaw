@@ -43,8 +43,12 @@ export async function handleRecurrence(
       const prefix = msg.kind === 'task' ? 'task' : 'msg';
       const newId = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      insertRecurrence(inDb, msg, newId, nextRun);
-      clearRecurrence(inDb, msg.id);
+      // Atomic: a crash between the insert and the clear would leave the original row with
+      // recurrence still set, so the next sweep re-matches it and double-fires the series.
+      inDb.transaction(() => {
+        insertRecurrence(inDb, msg, newId, nextRun);
+        clearRecurrence(inDb, msg.id);
+      })();
 
       log.info('Inserted next recurrence', {
         originalId: msg.id,

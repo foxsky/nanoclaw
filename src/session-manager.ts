@@ -432,9 +432,13 @@ export function writeOutboundDirect(
 ): void {
   const db = openOutboundDbRw(agentGroupId, sessionId);
   try {
+    // messages_out uses ODD seqs (the container is its writer). Seed from -1 so the first host
+    // write is seq=1 (odd), not 2 — an even seq breaks the odd-only parity getMessageIdBySeq
+    // relies on and could collide with an even messages_in seq (wrong-row edit/react). MAX(odd)+2
+    // stays odd.
     db.prepare(
       `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 2 FROM messages_out), datetime('now'), ?, ?, ?, ?, ?)`,
+       VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 2 FROM messages_out), datetime('now'), ?, ?, ?, ?, ?)`,
     ).run(message.id, message.kind, message.platformId, message.channelType, message.threadId, message.content);
   } finally {
     db.close();

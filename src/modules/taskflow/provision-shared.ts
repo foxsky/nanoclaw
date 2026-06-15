@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 import path from 'path';
@@ -522,7 +522,9 @@ export function createBoardFilesystem(params: CreateBoardFilesystemParams): void
  */
 export function fixOwnership(...paths: string[]): void {
   try {
-    execSync(`chown -R nanoclaw:nanoclaw ${paths.map((p) => JSON.stringify(p)).join(' ')}`, { timeout: 5000 });
+    // execFileSync (no shell) — JSON.stringify is NOT bash quoting ($(), backticks, \x still
+    // expand in bash double-quotes), so a path with a shell metacharacter would otherwise run.
+    execFileSync('chown', ['-R', 'nanoclaw:nanoclaw', ...paths], { timeout: 5000 });
   } catch {
     // Best-effort
   }

@@ -1282,8 +1282,9 @@ Crio assim?`,
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    // Wait long enough for the poll loop to process
-    await sleep(1000);
+    // Wait on the observable, not a fixed sleep == POLL_INTERVAL_MS (which can false-fail on a
+    // loaded runner): the fallback delivery is the positive signal.
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
@@ -1307,7 +1308,10 @@ Crio assim?`,
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await sleep(1000);
+    // Wait on a POSITIVE observable that the loop actually ran (the message gets consumed) before
+    // asserting the ABSENCE of a delivery — otherwise the toHaveLength(0) could false-pass simply
+    // because the loop hadn't started yet.
+    await waitFor(() => getPendingMessages().length === 0, 2000);
     controller.abort();
 
     expect(getUndeliveredMessages()).toHaveLength(0);

@@ -2,6 +2,7 @@ import type { McpServerConfig } from '../../container-config.js';
 import { buildAgentGroupImage, killContainer, wakeContainer } from '../../container-runner.js';
 import { restartAgentGroupContainers } from '../../container-restart.js';
 import { getSession } from '../../db/sessions.js';
+import { invalidPackageName } from '../../package-validation.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import {
   getContainerConfig,
@@ -224,6 +225,13 @@ registerResource({
         const apt = args.apt as string | undefined;
         const npm = args.npm as string | undefined;
         if (!apt && !npm) throw new Error('Provide --apt <pkg> or --npm <pkg>');
+
+        // Validate before persisting — these names are later interpolated into a Dockerfile
+        // `RUN ... ${names}` (container-runner.ts buildAgentGroupImage). Without this, a newline
+        // or shell metacharacter injects an extra build layer / command. Mirrors the MCP self-mod
+        // path (modules/self-mod/request.ts), which the approval-replay (dispatch.ts) bypasses.
+        const bad = invalidPackageName(apt ? [apt] : [], npm ? [npm] : []);
+        if (bad) throw new Error(`Invalid package name "${bad}" — only npm-name / apt [a-z0-9._+-] chars allowed`);
 
         if (apt) {
           const existing = JSON.parse(row.packages_apt) as string[];

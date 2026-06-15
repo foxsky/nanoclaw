@@ -20,6 +20,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
+import { invalidPackageName } from './package-validation.js';
 import { readEnvFile } from './env.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
@@ -141,7 +142,7 @@ export async function ensureAgentSecretMode(
 }
 
 /** Active containers tracked by session ID. */
-const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
+const activeContainers = new Map<string, { process: ChildProcess; containerName: string; onExit?: () => void }>();
 
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
@@ -159,6 +160,12 @@ export function getActiveContainerCount(): number {
 
 export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
+}
+
+/** Test-only seam: seed an active-container entry so killContainer's last-killer-wins listener
+ *  management can be exercised without spawning a real container. */
+export function __seedActiveContainerForTest(sessionId: string, proc: ChildProcess, containerName: string): void {
+  activeContainers.set(sessionId, { process: proc, containerName });
 }
 
 /**
@@ -285,9 +292,13 @@ export function killContainer(sessionId: string, reason: string, onExit?: () => 
   const entry = activeContainers.get(sessionId);
   if (!entry) return;
 
-  if (onExit) {
-    entry.process.once('close', onExit);
-  }
+  // Last-killer-wins for the respawn callback. Two kills can target the same session in the
+  // kill→'close' window (e.g. a self-mod apply that wants a respawn, then the stuck-sweep that
+  // wants it dead and passes no onExit). Replace any previously-registered onExit so only the most
+  // recent killer's intent runs on 'close' — otherwise a stale respawn fires after the sweep.
+  if (entry.onExit) entry.process.removeListener('close', entry.onExit);
+  entry.onExit = onExit;
+  if (onExit) entry.process.once('close', onExit);
 
   log.info('Killing container', { sessionId, reason, containerName: entry.containerName });
   try {
@@ -732,6 +743,13 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   const npmPackages = JSON.parse(configRow.packages_npm) as string[];
   if (aptPackages.length === 0 && npmPackages.length === 0) {
     throw new Error('No packages to install. Use install_packages first.');
+  }
+  // Defense-in-depth before the names hit the `RUN ... ${names}` interpolation below: refuse any
+  // package name that the write-side validators should already have blocked (a stale/legacy DB row
+  // or a future write path that skips validation must not inject a Dockerfile layer / shell cmd).
+  const badPackage = invalidPackageName(aptPackages, npmPackages);
+  if (badPackage) {
+    throw new Error(`Refusing to build image: invalid package name "${badPackage}" in container config`);
   }
 
   let dockerfile = `FROM ${CONTAINER_IMAGE}\nUSER root\n`;

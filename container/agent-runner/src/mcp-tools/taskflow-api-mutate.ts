@@ -1539,6 +1539,11 @@ export const apiMoveTool: McpToolDefinition = {
         );
       });
       dispatchNotificationEvents(notification_events, boardId ? { boardId } : {});
+      // Send the deterministic WhatsApp confirmation card for the bulk move too — the single-task
+      // path does this via finalizeMutationResult; the bulk path (2-4 tasks, below the 5-task gate)
+      // otherwise returns `formatted` only in JSON and the model has to narrate. emitDeterministic-
+      // ToolMessage also sets the dedup flag, so the model's own message is suppressed (no double).
+      emitDeterministicToolMessage(formatted);
       return jsonResponse({
         success: failures.length === 0,
         data: {

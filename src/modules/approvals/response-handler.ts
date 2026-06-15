@@ -19,7 +19,7 @@ import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { PendingApproval } from '../../types.js';
 import { ONECLI_ACTION, resolveOneCLIApproval, responderIdFromPayload } from './onecli-approvals.js';
-import { getApprovalHandler } from './primitive.js';
+import { getApprovalHandler, pickApprover } from './primitive.js';
 
 export async function handleApprovalsResponse(payload: ResponsePayload): Promise<boolean> {
   // OneCLI credential approvals — resolved via in-memory Promise first. Pass the namespaced
@@ -70,6 +70,24 @@ async function handleRegisteredApproval(
       content: JSON.stringify({ text, sender: 'system', senderId: 'system' }),
     });
   };
+
+  // Re-authorize the RESPONDER before acting on ANY registered approval (install_packages,
+  // add_mcp_server, cli_command, taskflow_gated_action). The card is DM'd to one approver, but the
+  // response path keys only on the questionId — a forged/cross-channel response could otherwise
+  // drive a privileged handler. Namespace the raw clicker id to the user_roles form (mirrors
+  // gated-action.ts / onecli-approvals.ts) and require membership in the eligible approver set.
+  // Unauthorized → leave the row pending for a genuine approver (do not delete or execute), and
+  // tell the agent so it isn't left waiting silently (matches the prior gated-action.ts behavior).
+  const responderId = userId ? (userId.includes(':') ? userId : `${channelType}:${userId}`) : null;
+  if (!responderId || !pickApprover(session.agent_group_id).includes(responderId)) {
+    log.warn('Approval response ignored: responder is not an eligible approver', {
+      approvalId: approval.approval_id,
+      action: approval.action,
+      responderId,
+    });
+    notify(`Your ${approval.action} response was ignored: the responder is not an authorized approver.`);
+    return;
+  }
 
   if (selectedOption !== 'approve') {
     notify(`Your ${approval.action} request was rejected by admin.`);

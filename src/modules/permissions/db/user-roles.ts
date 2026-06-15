@@ -9,9 +9,11 @@ export function grantRole(row: UserRole): void {
   if (row.role === 'owner' && row.agent_group_id !== null) {
     throw new Error('owner role must be global (agent_group_id = null)');
   }
+  // OR IGNORE so a re-grant is a no-op rather than a duplicate row — backed by the partial unique
+  // indexes from migration 016 (the composite PK alone doesn't dedupe NULL-agent_group_id globals).
   getDb()
     .prepare(
-      `INSERT INTO user_roles (user_id, role, agent_group_id, granted_by, granted_at)
+      `INSERT OR IGNORE INTO user_roles (user_id, role, agent_group_id, granted_by, granted_at)
        VALUES (@user_id, @role, @agent_group_id, @granted_by, @granted_at)`,
     )
     .run(row);

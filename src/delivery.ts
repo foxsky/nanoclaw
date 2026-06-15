@@ -130,7 +130,8 @@ async function pollActive(): Promise<void> {
     log.error('Active delivery poll error', { err });
   }
 
-  setTimeout(pollActive, ACTIVE_POLL_MS);
+  // Re-check the flag before re-arming so a tick finishing after stop doesn't schedule another.
+  if (activePolling) setTimeout(pollActive, ACTIVE_POLL_MS);
 }
 
 async function pollSweep(): Promise<void> {
@@ -145,7 +146,8 @@ async function pollSweep(): Promise<void> {
     log.error('Sweep delivery poll error', { err });
   }
 
-  setTimeout(pollSweep, SWEEP_POLL_MS);
+  // Re-check the flag before re-arming so a tick finishing after stop doesn't schedule another.
+  if (sweepPolling) setTimeout(pollSweep, SWEEP_POLL_MS);
 }
 
 export async function deliverSessionMessages(session: Session): Promise<void> {
@@ -187,6 +189,12 @@ async function drainSession(session: Session): Promise<void> {
     // Ensure platform_message_id column exists (migration for existing sessions)
     migrateDeliveredTable(inDb);
 
+    // Delivery is AT-LEAST-ONCE by design. `delivered` is marked only AFTER the adapter returns,
+    // so an adapter that reaches the platform but then throws on the response leg (e.g. a timeout)
+    // is retried — up to MAX_DELIVERY_ATTEMPTS visible duplicates under a lossy network. We do NOT
+    // write a pre-send "sending" sentinel: that would trade duplicates for message LOSS if the
+    // process crashed between the sentinel write and the actual send. Adapters whose platform
+    // accepts a client idempotency key should dedupe server-side; the rest accept the duplicate.
     for (const msg of undelivered) {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
