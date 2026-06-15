@@ -4415,6 +4415,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         : null,
     );
 
+    // RC5-ext (Codex P3 BLOCKER-2/3): an EXTERNAL-actor turn must NEVER run any
+    // board path — deterministic fast-paths, /clear (continuation reset), the
+    // context preamble, or the model — all of which bypass the C7 MCP tool gate.
+    // The confined external flow (C4) is not built yet, so fail CLOSED at the very
+    // TOP of the turn, before /clear and every handler. Keyed on the row marker so
+    // a malformed external+sender row is caught too. Clears both channels.
+    if (batchHasExternalActorRow(messages)) {
+      clearTurnActor();
+      clearTurnExternalActor();
+      markCompleted(messages.map((m) => m.id));
+      log('RC5-ext: external-actor turn skipped — confined flow not yet enabled (fail closed)');
+      continue;
+    }
+
     // Command handling: the host router gates filtered and unauthorized
     // admin commands before they reach the container. The only command
     // the runner handles directly is /clear (session reset).
@@ -4481,22 +4495,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // loop. The agent prompt + markCompleted below still use the FULL `keep`, so context is
     // preserved and drained exactly as before — only command DETECTION is wake-row-scoped.
     const commandRows = selectCommandRows(keep);
-
-    // RC5-ext (Codex P3 BLOCKER-2/3): an EXTERNAL-actor turn must NEVER run the
-    // board-operator deterministic fast-paths (they read/mutate board state with
-    // no actor gate), receive the board context preamble, or resume the board
-    // continuation — all of which bypass MCP dispatch and so are NOT covered by
-    // the C7 tool gate. The confined external flow (no board context + C7 +
-    // engine per-meeting re-check, C4) is not built yet, so fail CLOSED: skip the
-    // whole turn. Keyed on the row marker (not channel resolution) so a malformed
-    // external+sender row is caught too. clear both channels at this boundary.
-    if (batchHasExternalActorRow(keep)) {
-      clearTurnActor();
-      clearTurnExternalActor();
-      markCompleted(keep.map((m) => m.id));
-      log('RC5-ext: external-actor turn skipped — confined flow not yet enabled (fail closed)');
-      continue;
-    }
 
     const taskflowGreeting = taskflowPureGreetingReply(commandRows);
     if (taskflowGreeting) {
@@ -5116,6 +5114,15 @@ async function processQuery(
         if (done) return;
 
         const keptIds = keep.map((m) => m.id);
+        // RC5-ext (Codex P3 r2): the active stream is a BOARD turn. An external
+        // row arriving mid-stream must NOT be pushed into the board's query/
+        // continuation, nor run the follow-up deterministic handlers. Drop it
+        // (fail closed) — do NOT touch the board's turn_actor (still active).
+        if (batchHasExternalActorRow(keep)) {
+          markCompleted(keptIds);
+          log('RC5-ext: external-actor follow-up dropped from active board stream (fail closed)');
+          return;
+        }
         // #413: command detection on follow-up polls is wake-row-scoped too (see main loop).
         const commandRows = selectCommandRows(keep);
         const recentContext = [...recentOutboundContents(), ...recentInboundContents()];
