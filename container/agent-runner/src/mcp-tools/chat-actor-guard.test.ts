@@ -217,3 +217,143 @@ describe('chat-actor-guard — denyIfExternalActorBlocked (C7)', () => {
     });
   });
 });
+
+// RC5-ext P3 (C4b) — the board-actor guard (requiresChatActor) is ACTOR-AWARE.
+// SEC#13's requiresChatActor denies every wrapped mutate tool when turn_actor is
+// unresolved. On an external turn turn_actor is POISONED (an external is never a
+// board person), so without C4b the whitelisted note/accept tools stay denied and
+// the confined external flow can do nothing. C4b lets an authenticated EXTERNAL
+// turn through requiresChatActor ONLY for the external-safe tools (the same
+// whitelist the C7 central gate enforces) — every other mutate tool still denies.
+describe('chat-actor-guard — C4b actor-aware requiresChatActor (external-safe scoped)', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    __resetTurnExternalActorForTesting();
+    setTurnActor([]); // turn_actor unresolved (poisoned, as on a real external turn)
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-x';
+  });
+  afterEach(() => {
+    clearTurnActor();
+    clearTurnExternalActor();
+    closeSessionDb();
+    setVerbatimIds(false);
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('a resolved external turn PASSES the board-actor guard for api_task_add_note', () => {
+    setTurnExternalActor([ext1]);
+    expect(denyIfChatActorUnresolved('api_task_add_note', {})).toBeNull();
+  });
+
+  it('a resolved external turn PASSES the guard for api_admin accept_external_invite ONLY', () => {
+    setTurnExternalActor([ext1]);
+    expect(denyIfChatActorUnresolved('api_admin', { action: 'accept_external_invite' })).toBeNull();
+    expect(denyIfChatActorUnresolved('api_admin', { action: 'register_person' })).not.toBeNull();
+  });
+
+  it('a resolved external turn STILL DENIES non-whitelisted mutate tools (no board-person authority)', () => {
+    setTurnExternalActor([ext1]);
+    for (const t of ['api_create_simple_task', 'api_move', 'api_reassign', 'api_task_edit_note', 'api_task_remove_note']) {
+      const r = denyIfChatActorUnresolved(t, {});
+      expect(r, `${t} must stay denied on an external turn`).not.toBeNull();
+      expect(parse(r!).error_code).toBe('permission_denied');
+    }
+  });
+
+  it('NO external + unresolved board still denies even an external-safe tool name (C4b never opens a board turn)', () => {
+    // turn_external_actor unresolved, turn_actor unresolved → the external bypass
+    // must NOT fire just because the tool name is whitelisted.
+    expect(denyIfChatActorUnresolved('api_task_add_note', {})).not.toBeNull();
+  });
+
+  it('a POISONED external turn (two externals → unresolved) does NOT pass the guard for a whitelisted tool', () => {
+    setTurnExternalActor([ext1, { ...ext1, externalId: 'ext-2' }]);
+    expect(denyIfChatActorUnresolved('api_task_add_note', {})).not.toBeNull();
+  });
+
+  it('requiresChatActor runs the whitelisted handler on an external turn', async () => {
+    setTurnExternalActor([ext1]);
+    const guarded = requiresChatActor({
+      tool: { name: 'api_task_add_note', inputSchema: { type: 'object' } },
+      handler: async () => ({ content: [{ type: 'text', text: JSON.stringify({ success: true, ran: true }) }] }),
+    });
+    expect(parse(await guarded.handler({})).ran).toBe(true);
+  });
+});
+
+// Registry coverage for an EXTERNAL turn: at the REGISTERED (post-wrap) handler
+// level, requiresChatActor itself (the second gate, defense-in-depth behind the
+// C7 central dispatch gate) must DENY every mutate tool except api_task_add_note
+// — independent of C7. A whitelist that drifts between C4b and C7 fails here.
+describe('chat-actor-guard — C4b external-turn registry coverage', () => {
+  beforeEach(async () => {
+    await import('./taskflow-api-mutate.ts');
+    await import('./taskflow-api-update.ts');
+    await import('./taskflow-api-notes.ts');
+    await import('./taskflow-api-comment.ts');
+    await import('./taskflow-api-read.ts');
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    __resetTurnExternalActorForTesting();
+    setTurnActor([]); // turn_actor poisoned, as on a real external turn
+    setTurnExternalActor([ext1]); // a single resolved external
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-x';
+  });
+  afterEach(() => {
+    clearTurnActor();
+    clearTurnExternalActor();
+    closeSessionDb();
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  for (const name of MUTATE_TOOLS.filter((n) => n !== 'api_task_add_note')) {
+    it(`${name} STILL denies on an external turn (only api_task_add_note is external-safe)`, async () => {
+      const def = getRegisteredToolForTesting(name);
+      expect(def, `tool ${name} is not registered`).toBeDefined();
+      // api_admin with a non-whitelisted action denies via the actor guard; with
+      // accept_external_invite it would pass the guard and run the real handler —
+      // so probe api_admin with a plain (non-accept) action to assert the deny.
+      const args = name === 'api_admin' ? { action: 'register_person' } : {};
+      const body = parse(await def!.handler(args));
+      expect(body.error_code, `${name} must stay denied on an external turn`).toBe('permission_denied');
+      expect(String(body.error)).toMatch(/authenticate/i);
+    });
+  }
+
+  it('api_task_add_note PASSES the actor guard on an external turn (handler runs / no actor deny)', async () => {
+    const def = getRegisteredToolForTesting('api_task_add_note');
+    expect(def).toBeDefined();
+    // It passes requiresChatActor (C4b) and reaches the real handler, which then
+    // errors for OTHER reasons (no meeting/grant/DB seeded) — never the actor deny.
+    let isActorDeny = false;
+    try {
+      const body = parse(await def!.handler({ task_id: 'M1', sender_name: 'Maria', text: 'oi' }));
+      isActorDeny = body.error_code === 'permission_denied' && /authenticate/i.test(String(body.error ?? ''));
+    } catch {
+      isActorDeny = false;
+    }
+    expect(isActorDeny, 'api_task_add_note was wrongly denied by the actor guard on an external turn').toBe(false);
+  });
+
+  // Codex C4b NICE: lock the whitelisted api_admin action through the REGISTERED
+  // wrapper (not just the raw guard). accept_external_invite passes requiresChatActor
+  // on an external turn and reaches the real handler; a non-whitelisted action denies.
+  it('api_admin accept_external_invite PASSES the actor guard via the registered wrapper; register_person denies', async () => {
+    const def = getRegisteredToolForTesting('api_admin');
+    expect(def).toBeDefined();
+    let acceptIsActorDeny = false;
+    try {
+      const body = parse(await def!.handler({ action: 'accept_external_invite', task_id: 'M1', sender_name: 'Maria' }));
+      acceptIsActorDeny = body.error_code === 'permission_denied' && /authenticate/i.test(String(body.error ?? ''));
+    } catch {
+      acceptIsActorDeny = false; // reached the real handler, which errors for non-actor reasons
+    }
+    expect(acceptIsActorDeny, 'accept_external_invite was wrongly denied by the actor guard on an external turn').toBe(
+      false,
+    );
+    const denied = parse(await def!.handler({ action: 'register_person', sender_name: 'Maria' }));
+    expect(denied.error_code).toBe('permission_denied');
+    expect(String(denied.error)).toMatch(/authenticate/i);
+  });
+});

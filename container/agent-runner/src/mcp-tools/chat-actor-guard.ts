@@ -29,12 +29,27 @@ import type { McpToolDefinition } from './types.js';
 import { jsonResponse } from './util.js';
 
 /** Returns a permission_denied result when the in-session chat surface has no
- *  single authenticated sender this turn; otherwise null (proceed). */
-export function denyIfChatActorUnresolved(): CallToolResult | null {
+ *  single authenticated sender this turn; otherwise null (proceed).
+ *
+ *  RC5-ext C4b: the guard is ACTOR-AWARE. An external turn POISONS `turn_actor`
+ *  (an external is never a board person), so the board-actor check below fails —
+ *  but an authenticated EXTERNAL turn IS allowed through, ONLY for the
+ *  external-safe tools (`isExternalSafeTool`, the same whitelist the C7 central
+ *  gate enforces). Every other mutate tool still denies, so an external can never
+ *  drive a board-person-authority mutation. `toolName`/`args` are optional so the
+ *  legacy no-arg callers (a pure board-actor check) keep working. */
+export function denyIfChatActorUnresolved(
+  toolName?: string,
+  args?: Record<string, unknown>,
+): CallToolResult | null {
   if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID || getVerbatimIds() || isApprovedReplay()) {
     return null;
   }
   if (getTurnActor().resolved) return null;
+  // C4b: a resolved external turn passes ONLY for an external-safe tool.
+  if (toolName && getTurnExternalActor().resolved && isExternalSafeTool(toolName, args ?? {})) {
+    return null;
+  }
   return jsonResponse({
     success: false,
     error_code: 'permission_denied',
@@ -44,11 +59,12 @@ export function denyIfChatActorUnresolved(): CallToolResult | null {
 }
 
 /** Wrap a board-mutating tool so its handler is gated by the per-turn actor.
- *  The original `tool` schema is preserved; only the handler is fronted. */
+ *  The original `tool` schema is preserved; only the handler is fronted. The
+ *  tool name + args reach the guard so the C4b external-safe scoping applies. */
 export function requiresChatActor(def: McpToolDefinition): McpToolDefinition {
   return {
     ...def,
-    handler: async (args) => denyIfChatActorUnresolved() ?? def.handler(args),
+    handler: async (args) => denyIfChatActorUnresolved(def.tool.name, args) ?? def.handler(args),
   };
 }
 
@@ -72,16 +88,27 @@ export function requiresChatActor(def: McpToolDefinition): McpToolDefinition {
 const EXTERNAL_SAFE_TOOLS: ReadonlySet<string> = new Set(['api_task_add_note']);
 const EXTERNAL_SAFE_ADMIN_ACTIONS: ReadonlySet<string> = new Set(['accept_external_invite']);
 
+/**
+ * The single source of truth for the external-safe capability whitelist: the
+ * narrow grant-scoped flow an authenticated external may drive (add a note to
+ * their meeting; api_admin accept_external_invite). Shared by BOTH gates —
+ * `denyIfExternalActorBlocked` (C7, central dispatch default-deny) and
+ * `denyIfChatActorUnresolved` (C4b, the per-tool board-actor guard) — so the two
+ * can never drift apart (a tool allowed by one but not the other).
+ */
+export function isExternalSafeTool(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName === 'api_admin') {
+    const action = typeof args.action === 'string' ? args.action : '';
+    return EXTERNAL_SAFE_ADMIN_ACTIONS.has(action);
+  }
+  return EXTERNAL_SAFE_TOOLS.has(toolName);
+}
+
 export function denyIfExternalActorBlocked(toolName: string, args: Record<string, unknown>): CallToolResult | null {
   if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID || getVerbatimIds() || isApprovedReplay()) return null;
   if (!getTurnExternalActor().resolved) return null; // not an external turn → no capability restriction
   // External turn: allow ONLY the grant-scoped flow; deny everything else.
-  if (toolName === 'api_admin') {
-    const action = typeof args.action === 'string' ? args.action : '';
-    if (EXTERNAL_SAFE_ADMIN_ACTIONS.has(action)) return null;
-  } else if (EXTERNAL_SAFE_TOOLS.has(toolName)) {
-    return null;
-  }
+  if (isExternalSafeTool(toolName, args)) return null;
   return jsonResponse({
     success: false,
     error_code: 'permission_denied',
