@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 
-import { batchHasExternalActorRow, turnActorSenders, turnExternalActors } from './poll-loop.ts';
+import {
+  batchHasExternalActorRow,
+  externalActorCommandRows,
+  turnActorSenders,
+  turnExternalActors,
+} from './poll-loop.ts';
 import type { MessageInRow } from './db/messages-in.ts';
 
 // RC5-ext P3 — the poll-loop derivation of the per-turn EXTERNAL actor.
@@ -116,5 +121,34 @@ describe('batchHasExternalActorRow — the fail-closed gate trigger (Codex B2/B3
     expect(batchHasExternalActorRow([systemRow()])).toBe(false);
     const extCtx = { kind: 'chat', trigger: 0, content: JSON.stringify({ text: 'x', actorKind: 'external' }) } as unknown as MessageInRow;
     expect(batchHasExternalActorRow([extCtx])).toBe(false); // not wake-eligible
+  });
+});
+
+describe('externalActorCommandRows — the confined-prompt / follow-up-drop row selector (C4c)', () => {
+  it('returns ONLY the external wake-eligible rows', () => {
+    const ext = extRow('ext-1');
+    expect(externalActorCommandRows([ext])).toEqual([ext]);
+  });
+
+  it('EXCLUDES a co-batched board CONTEXT row (trigger=0) — no board-private leak into the external prompt', () => {
+    const ext = extRow('ext-1');
+    const rows = [ext, contextRow()];
+    const selected = externalActorCommandRows(rows);
+    expect(selected).toEqual([ext]); // the board context row is never in the confined prompt
+  });
+
+  it('EXCLUDES a co-batched board COMMAND row (trigger=1) — only the external rows are selected', () => {
+    const ext = extRow('ext-1');
+    const selected = externalActorCommandRows([ext, boardRow('Ana')]);
+    expect(selected).toEqual([ext]);
+  });
+
+  it('selects a malformed external+sender row (keys on the marker; the gate fails closed on it separately)', () => {
+    const malformed = { kind: 'chat', trigger: 1, content: JSON.stringify({ text: 'x', sender: 'A', actorKind: 'external' }) } as unknown as MessageInRow;
+    expect(externalActorCommandRows([malformed])).toEqual([malformed]);
+  });
+
+  it('empty for a pure board turn', () => {
+    expect(externalActorCommandRows([boardRow('Ana'), systemRow()])).toEqual([]);
   });
 });

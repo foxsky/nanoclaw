@@ -134,3 +134,23 @@ Commit chain: `68f2acc4` (R1) · `8c107ba3` (R2) · R3 · R4. Host half clean af
 ## NICE (carry into build)
 - `resolveExternalDm`: fail closed on duplicate `direct_chat_jid` (schema isn't unique on it).
 - Trusted channel shape stays minimal `{externalId, displayName, sourceDmMgId}`.
+
+## P3 build log — C3/C4 (skill/taskflow-v2)
+- **C3 (turn-external-actor channel + poison + deterministic default-deny) — DONE** (`turn-external-actor.ts`, poll-loop pin/clear, `turnActorSenders` poison-on-external).
+- **C4a (engine per-meeting grant re-check) — DONE + committed** (`57e50ee0`): `hasMeetingExternalGrant` re-queries `meeting_external_participants` (accepted + non-expired, exact board+meeting) at note add/edit/remove; `sender_external_id` forwarded tool→engine.
+- **C7 (external-safe capability gate) — DONE** (`denyIfExternalActorBlocked` central at server.ts dispatch; whitelist `api_task_add_note` + `api_admin:accept_external_invite`).
+- **C4b (actor-aware `requiresChatActor`) — DONE + committed** (`0de97550`): the board-actor guard passes a resolved EXTERNAL turn ONLY for the external-safe tools (shared `isExternalSafeTool` with C7); every other mutate tool still denies. Codex xhigh: zero BLOCKER/IMPORTANT.
+- **C4c (confined external-turn execution path) — DONE (pending final Codex round):** replaces the fail-closed top-of-turn SKIP with a confined run. Isolation enforced on EVERY side channel, not just the prompt:
+  - **Prompt** = the external row(s) only (`externalActorCommandRows`); co-batched board context excluded.
+  - **Routing/reply** derived from the external row(s) (`extractRouting(externalRows)`), all sharing one non-null cold-DM platform → SEC#11 confines the reply to the external's cold-DM (Codex R1 BLOCKER-1).
+  - **Web-origin** force-cleared so a co-batched web row can't rewrite the reply into the web-chat path (R1 BLOCKER-2).
+  - **Capabilities** = a CONFINED PROVIDER mode (`QueryInput.confinedExternal` / `AgentProvider.supportsConfinedExternal`): `computeAllowedTools(confined)` exposes ONLY `mcp__nanoclaw__*` — NO built-in Bash/Read/Write/Edit/Glob/Grep (those are NOT seen by the C7 MCP gate, so they were an unguarded fs/bash exfil path), `additionalDirectories=[]`, a **neutral cwd** (`/tmp/nanoclaw-external-confined`, no board CLAUDE.md), and a minimal external-only system prompt. A provider without `supportsConfinedExternal===true` fails the external turn CLOSED (R1 BLOCKER-3 — the load-bearing B6 control).
+  - **Identity** turn_actor POISONED + turn_external_actor pinned. **Statelessness** FRESH continuation, never persisted (`runConfinedExternalQuery` — no continuation persist, no follow-up merge).
+  - **Fail-closed** on: malformed external+sender, >1 distinct external, external+board-command, external+**system** (checked on the raw `allPending`, R1 IMPORTANT-1), inconsistent reply target, or an unconfinable provider. Cleanup is failure-isolated (R1 IMPORTANT-2).
+  - Tests: `confined-external.test.ts` (allowedTools restriction), `poll-loop-external-actor.test.ts` (`externalActorCommandRows`), `chat-actor-guard.test.ts` (C4b). Codex R1 = 3 BLOCKER + 2 IMPORTANT + 1 NICE, all fixed; R2 in progress.
+
+## Remaining before the resolver can be REGISTERED (un-DARK)
+- Final Codex round on C4c clean.
+- **C6 formatter** (`actor_type=external_contact`, displayName, default reply target) — currently external rows render via plain `formatMessages`.
+- **`setUnroutedDmResolver(resolveUnroutedExternalDm)`** in `modules/taskflow/index.ts` — the ONLY switch that takes the whole flow live. Until then everything above is DARK (no external row is ever written into a board session).
+- P4 e2e + the B7 "stale-actor send denied after turn" test.

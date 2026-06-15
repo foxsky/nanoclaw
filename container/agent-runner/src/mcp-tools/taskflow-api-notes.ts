@@ -29,6 +29,12 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
   },
   async handler(args) {
     args = normalizeAgentIds(args);
+    // RC5-ext C4c (Codex R3 IMPORTANT): an EXTERNAL sender's tool result must not
+    // carry board-private task data (description, other notes, assignee/creator
+    // ids, notification target metadata) — the model could reflect it into the
+    // external's allowed reply. normalizeAgentIds set sender_external_id from the
+    // authenticated channel iff this is a resolved external turn.
+    const isExternalSender = typeof args.sender_external_id === 'string' && args.sender_external_id.length > 0;
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.text !== 'string' || args.text.length === 0) {
@@ -60,8 +66,19 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
       text: args.text,
       parent_note_id: parentNoteId,
     });
-    emitMutationConfirmation(finalResult);
-    if (!result.success) return jsonResponse(finalResult);
+    // Codex R4 IMPORTANT: the deterministic confirmation card can carry board
+    // context (the note card / "already registered" card) and is emitted OUTSIDE
+    // the sanitized JSON path — skip it for an external sender. Their only
+    // model-/external-visible output is the minimal response below + the model's
+    // own reply (out-of-band board notifications still dispatch).
+    if (!isExternalSender) emitMutationConfirmation(finalResult);
+    if (!result.success) {
+      // External: a generic denial — never echo board context from the failure.
+      if (isExternalSender) {
+        return jsonResponse({ success: false, error_code: 'permission_denied', error: 'Not authorized to add a note to this task.' });
+      }
+      return jsonResponse(finalResult);
+    }
     // V1 parity (EX-019): apiAddNote now builds the owner/parent notification
     // (it was silent). Deliver it deterministically like every other mutation —
     // normalize → enqueue-deferred-first → dispatch, in-session-gated + fail-soft —
@@ -73,6 +90,17 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
     const notification_events = safeNotificationEvents(result);
     enqueueDeferredNotificationsInSession(parsed.boardId, notification_events, parsed.taskId, {});
     dispatchNotificationEvents(notification_events, parsed.boardId ? { boardId: parsed.boardId } : {});
+    // External: notifications dispatched OUT OF BAND above; the model-visible
+    // result is a minimal confirmation only — no task data, notes, person ids, or
+    // notification target metadata that the model could reflect to the external.
+    if (isExternalSender) {
+      return jsonResponse({
+        success: true,
+        note_added: true,
+        task_id: parsed.taskId,
+        formatted_response: `Nota registrada em ${parsed.taskId}.`,
+      });
+    }
     const { notifications: _rawNotifs, parent_notification: _rawParent, ...responseBody } =
       finalResult as Record<string, unknown>;
     return jsonResponse({ ...responseBody, notification_events });

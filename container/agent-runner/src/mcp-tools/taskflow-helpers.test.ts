@@ -204,11 +204,23 @@ describe('RC5-ext (P3) — sender_external_id bound to the authenticated externa
     expect(out.sender_external_id).toBe('ext-1');
   });
 
-  it('does NOT bind a board-person sender_name on an external turn (mutual exclusivity)', () => {
+  it('OVERWRITES a model-supplied board sender_name with the external:<id> label', () => {
     setTurnExternalActor([maria]); // external resolved; turn_actor unresolved
     const out = normalizeAgentIds({ board_id: 'b', task_id: 'M1', sender_name: 'BossManager' });
-    expect('sender_name' in out).toBe(false); // unresolved board actor → deleted
+    // C4c: the whitelisted external tools REQUIRE sender_name, so it is set — but
+    // NEVER to the model's board name NOR the attacker-influenced displayName; it
+    // is `external:<id>` (Codex R3). The real boundary is the engine forcing
+    // board-person auth OFF for an external; authorization is the sender_external_id
+    // + the per-meeting grant re-check.
+    expect(out.sender_name).toBe('external:ext-1');
+    expect(out.sender_name).not.toBe('BossManager');
     expect(out.sender_external_id).toBe('ext-1');
+  });
+
+  it('uses external:<id> even when the external actor HAS a display name (no collision surface)', () => {
+    setTurnExternalActor([{ ...maria, displayName: 'BossManager' }]); // displayName == a board manager
+    const out = normalizeAgentIds({ board_id: 'b', task_id: 'M1' });
+    expect(out.sender_name).toBe('external:ext-1');
   });
 
   it('a BOARD turn (turn_actor resolved, no external) carries NO sender_external_id', () => {

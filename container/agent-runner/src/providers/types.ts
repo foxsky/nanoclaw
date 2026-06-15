@@ -6,6 +6,16 @@ export interface AgentProvider {
    */
   readonly supportsNativeSlashCommands: boolean;
 
+  /**
+   * RC5-ext C4c — true if `query({confinedExternal:true})` is HONORED: the
+   * provider drops every built-in fs/bash tool and board filesystem access and
+   * exposes only the nanoclaw MCP server. The poll-loop runs an external turn
+   * ONLY when this is true; a provider without confined support fails the
+   * external turn CLOSED (skip) rather than running it with full board tools.
+   * Optional + absent ⇒ treated as false (fail closed) — a provider must OPT IN.
+   */
+  readonly supportsConfinedExternal?: boolean;
+
   /** Start a new query. Returns a handle for streaming input and output. */
   query(input: QueryInput): AgentQuery;
 
@@ -57,6 +67,18 @@ export interface QueryInput {
   systemContext?: {
     instructions?: string;
   };
+
+  /**
+   * RC5-ext C4c — run this query in CONFINED-external mode: an authenticated
+   * external participant is driving the turn, so the provider must drop ALL
+   * built-in fs/bash tools and board filesystem access, exposing ONLY the
+   * nanoclaw MCP server (which the C7 gate further narrows to the external-safe
+   * whitelist). The caller pairs this with a neutral `cwd` (no board CLAUDE.md)
+   * and a minimal external-only `systemContext`. Providers that don't implement
+   * a confined mode MUST treat the turn as unsupported rather than run it
+   * unconfined — see the poll-loop's provider check.
+   */
+  confinedExternal?: boolean;
 }
 
 export interface McpServerConfig {

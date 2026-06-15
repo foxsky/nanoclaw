@@ -3139,13 +3139,29 @@ export class TaskflowEngine {
         const taskBoardId = this.taskBoardId(task);
         const isAncestorWrite = !!ancestorTask && taskBoardId !== this.boardId;
         const actorBoardId = isAncestorWrite ? taskBoardId : this.boardId;
-        const sender = this.resolvePerson(params.sender_name, actorBoardId);
+        const senderExternalId = params.sender_external_id;
+        const isExternalSender = !!senderExternalId;
+        // RC5-ext C4c (Codex R3 BLOCKER): an EXTERNAL sender carries NO board-person
+        // authority. Do NOT resolve sender_name to a board person — its display
+        // label is attacker-influenced and could collide with a manager/assignee
+        // name, which would otherwise set isMgr/isAssignee and BYPASS the
+        // per-meeting grant check (here and in addNoteCore's meeting gate). The
+        // ONLY authorization for an external is the re-queried meeting grant.
+        const sender = isExternalSender ? null : this.resolvePerson(params.sender_name, actorBoardId);
         const senderPersonId = sender?.person_id ?? null;
-        const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
-        const isMgr = this.isManager(params.sender_name, actorBoardId) || !!params.sender_is_service;
+        const isAssignee = !isExternalSender && senderPersonId != null && task.assignee === senderPersonId;
+        const isMgr = !isExternalSender && (this.isManager(params.sender_name, actorBoardId) || !!params.sender_is_service);
         const now = new Date().toISOString();
+        const hasExternalGrant = isExternalSender
+          ? this.hasMeetingExternalGrant(taskBoardId, task.id, senderExternalId!)
+          : false;
 
-        if (
+        if (isExternalSender) {
+          // External: ONLY a note on the EXACT granted meeting task — nothing else.
+          if (task.type !== 'meeting' || !hasExternalGrant) {
+            return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to add notes to this task` } as any;
+          }
+        } else if (
           !params.sender_is_service &&
           task.type !== 'meeting' &&
           !isMgr &&
@@ -3155,11 +3171,6 @@ export class TaskflowEngine {
           return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to add notes to this task` } as any;
         }
 
-        const senderExternalId = params.sender_external_id;
-        const isExternalSender = !!senderExternalId;
-        const hasExternalGrant = senderExternalId
-          ? this.hasMeetingExternalGrant(taskBoardId, task.id, senderExternalId)
-          : false;
         const out = this.addNoteCore(
           { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId, now },
           params.text,

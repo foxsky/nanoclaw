@@ -71,11 +71,16 @@ const SECURITY_CRITICAL = [
   'TeamCreate',
   'TeamDelete',
   'SendMessage',
+  // RC5-ext C4c: MCP-resource readers (see security-denylist.ts).
+  'ListMcpResources',
+  'ReadMcpResource',
 ];
 
 // #412 additions to the disallowed set — capability escapes that were advertised in TOOL_ALLOWLIST
 // but previously denied by neither list. The union/SDK assertions below expect PRE_REFACTOR + these.
 const SEC412_ADDITIONS = ['Task', 'TaskOutput', 'TaskStop', 'TeamCreate', 'TeamDelete', 'SendMessage'];
+// RC5-ext C4c additions — MCP-resource readers denied for every turn.
+const RC5EXT_ADDITIONS = ['ListMcpResources', 'ReadMcpResource'];
 
 // Parity/UX-only entries — deferred SDK builtins or v1-replay-shape
 // preservation. Denying these is about observable reply shape, not a security
@@ -135,7 +140,7 @@ describe('SECURITY_DENYLIST + PARITY_DENYLIST', () => {
   });
 
   it('equal the pre-refactor set plus the #412 capability-escape additions', () => {
-    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS];
+    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS, ...RC5EXT_ADDITIONS];
     const union = [...SECURITY_DENYLIST, ...PARITY_DENYLIST];
     expect(union.length).toBe(expected.length);
     expect([...union].sort()).toEqual([...expected].sort());
@@ -144,7 +149,7 @@ describe('SECURITY_DENYLIST + PARITY_DENYLIST', () => {
 
 describe('SDK_DISALLOWED_TOOLS (claude.ts public export)', () => {
   it('equals the pre-refactor set plus the #412 capability-escape additions', () => {
-    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS];
+    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS, ...RC5EXT_ADDITIONS];
     expect(SDK_DISALLOWED_TOOLS.length).toBe(expected.length);
     expect([...SDK_DISALLOWED_TOOLS].sort()).toEqual([...expected].sort());
   });

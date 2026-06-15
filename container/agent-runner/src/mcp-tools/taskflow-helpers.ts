@@ -230,7 +230,20 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
     // external id, and an external turn never carries a board-person sender_name.
     delete out.sender_external_id;
     const ext = getTurnExternalActor();
-    if (ext.resolved) out.sender_external_id = ext.externalId;
+    if (ext.resolved) {
+      out.sender_external_id = ext.externalId;
+      // RC5-ext C4c: an external turn has NO board person, so the board-actor
+      // binding above DELETED sender_name — but the whitelisted external tools
+      // (api_task_add_note, api_admin accept_external_invite) still require one.
+      // Synthesize a non-board `external:<id>` label so the required-field check
+      // passes without echoing the attacker-influenced displayName (Codex R3). The
+      // REAL boundary is the engine: apiAddNote does not resolve an external
+      // sender_name to a board person, so this label can never confer
+      // manager/assignee authority regardless of its value — it is for
+      // audit/rendering only, and the `external:` prefix is a readable convention,
+      // not a security-load-bearing namespace.
+      out.sender_name = `external:${ext.externalId}`;
+    }
   }
   return out;
 }

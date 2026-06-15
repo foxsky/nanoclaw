@@ -8524,4 +8524,34 @@ describe('RC5-ext (C4) — external meeting-note grant re-check', () => {
     expect(addNote('M-1').success).toBe(true);
     expect(addNote('M-2').success).toBe(false);
   });
+
+  // Codex R3 BLOCKER: an external sender's sender_name must NEVER confer
+  // board-person authority — even if it collides with a real manager/assignee.
+  // 'Alexandre' (person-1) is the board manager; T-001 a simple task assigned to
+  // person-1. An external spoofing that name must be denied everywhere a grant
+  // doesn't apply, and on a granted meeting must NOT be attributed to the manager.
+  function addNoteAs(taskId: string, senderName: string) {
+    return engine.apiAddNote({ board_id: BOARD_ID, task_id: taskId, sender_name: senderName, sender_external_id: 'ext-1', text: 'spoof' }) as any;
+  }
+
+  it('external sender_name colliding with a MANAGER cannot note a non-meeting task (no isMgr bypass)', () => {
+    expect(addNoteAs('T-001', 'Alexandre').success).toBe(false);
+  });
+
+  it('external sender_name colliding with the ASSIGNEE cannot note a non-meeting task', () => {
+    // person-1 (Alexandre) is T-001's assignee; the external must not inherit that.
+    expect(addNoteAs('T-001', 'Alexandre').success).toBe(false);
+  });
+
+  it('external sender_name colliding with a manager cannot note a meeting WITHOUT a grant', () => {
+    expect(addNoteAs('M-1', 'Alexandre').success).toBe(false);
+  });
+
+  it('even with a grant, a manager-colliding sender_name is attributed external_contact, never the manager', () => {
+    grant('M-1', 'accepted', future());
+    expect(addNoteAs('M-1', 'Alexandre').success).toBe(true);
+    const notes = JSON.parse((db.prepare(`SELECT notes FROM tasks WHERE id='M-1' AND board_id=?`).get(BOARD_ID) as any).notes);
+    expect(notes[0].author_actor_type).toBe('external_contact');
+    expect(notes[0].author_actor_id).toBe('ext-1');
+  });
 });

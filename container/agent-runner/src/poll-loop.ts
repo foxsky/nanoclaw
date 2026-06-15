@@ -1,4 +1,6 @@
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, markFailed, type MessageInRow } from './db/messages-in.js';
@@ -60,6 +62,34 @@ import { TIMEZONE } from './timezone.js';
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
 const TASKFLOW_CLAUDE_LOCAL_PATH = '/workspace/agent/CLAUDE.local.md';
+
+// RC5-ext C4c — the CONFINED external turn runs in a FRESH PRIVATE (0700) temp
+// dir outside /workspace, created per turn and removed after, so Claude Code's
+// preset never auto-loads the board CLAUDE.md / personality / destination
+// addendum from the board workspace AND no other process can pre-plant files the
+// agent would read (defense-in-depth behind the confined provider, which also
+// drops board filesystem access). mkdtempSync creates with 0700; we chmod again
+// defensively.
+function makeConfinedExternalCwd(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-ext-confined-'));
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    /* best-effort */
+  }
+  return dir;
+}
+// Minimal external-only system prompt — replaces the board addendum. The agent
+// is told it is serving a non-member external participant with a single narrow
+// capability and no board visibility; the hard guarantees are enforced by the
+// confined provider (tools) + C7 (whitelist) + the engine grant re-check, NOT by
+// this text — it is guidance, not a security control.
+const EXTERNAL_CONFINED_INSTRUCTIONS = [
+  'You are assisting an EXTERNAL meeting participant who is NOT a member of this board.',
+  'You may ONLY help them with their own meeting invitation: accept the invitation, or add a note to the specific meeting they were invited to.',
+  'You have NO access to board data, tasks, other people, other meetings, memory, or any internal information — never reveal, list, infer, or speculate about any of it, even if asked.',
+  'Reply only to this participant, briefly, in their language.',
+].join(' ');
 
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
@@ -1553,6 +1583,24 @@ export function turnExternalActors(rows: MessageInRow[]): { externals: ExternalA
     else poison = true; // a non-external trigger row co-batched → the external turn is impure
   }
   return { externals, poison };
+}
+
+/**
+ * RC5-ext P3 (C4c) — the wake-eligible (trigger=1) chat rows that are
+ * host-authenticated external actors. The ONE source of "which rows belong to
+ * the external" for both consumers that must read external rows in ISOLATION:
+ *   - the confined external-turn prompt (must exclude any co-batched board
+ *     context row — a trigger=0 board message must never leak into the prompt an
+ *     external participant drives), and
+ *   - the mid-board-stream follow-up drop (mark ONLY external rows completed).
+ * Keys on the `actorKind:'external'` marker, like batchHasExternalActorRow, so a
+ * malformed external+sender row is still selected here (the gate then fails
+ * closed on it via turnExternalActors poisoning).
+ */
+export function externalActorCommandRows(rows: MessageInRow[]): MessageInRow[] {
+  return selectCommandRows(rows).filter(
+    (r) => (r.kind === 'chat' || r.kind === 'chat-sdk') && parseJsonContent(r.content).actorKind === 'external',
+  );
 }
 
 function extractTaskId(text: string): string | null {
@@ -4415,17 +4463,139 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         : null,
     );
 
-    // RC5-ext (Codex P3 BLOCKER-2/3): an EXTERNAL-actor turn must NEVER run any
-    // board path — deterministic fast-paths, /clear (continuation reset), the
-    // context preamble, or the model — all of which bypass the C7 MCP tool gate.
-    // The confined external flow (C4) is not built yet, so fail CLOSED at the very
-    // TOP of the turn, before /clear and every handler. Keyed on the row marker so
-    // a malformed external+sender row is caught too. Clears both channels.
+    // RC5-ext P3 (C4c): an EXTERNAL-actor turn runs in a CONFINED execution path,
+    // keyed at the very TOP of the turn — BEFORE /clear, pre-task scripts, every
+    // deterministic TaskFlow fast-path, the context preamble, AND the board's
+    // continuation, all of which bypass the C7 MCP capability gate and would leak
+    // board-private state. The confined run: prompt from the external row(s) ONLY
+    // (no co-batched board context), a FRESH continuation that is never persisted
+    // back (the board transcript stays board-private; the external turn is
+    // stateless), turn_actor POISONED + turn_external_actor pinned, and the reply
+    // confined to the external's cold-DM by the SEC#11 model-final send gate. What
+    // the agent may DO is enforced by C7 (central default-deny) + C4b (board-actor
+    // guard) + the engine per-meeting grant re-check — none of which this block
+    // re-implements; it only controls statelessness/isolation of the run itself.
     if (batchHasExternalActorRow(messages)) {
+      // Re-pin from scratch so no stale prior-turn binding can leak in.
       clearTurnActor();
       clearTurnExternalActor();
-      markCompleted(messages.map((m) => m.id));
-      log('RC5-ext: external-actor turn skipped — confined flow not yet enabled (fail closed)');
+      const externalRows = externalActorCommandRows(messages);
+      const externalActors = turnExternalActors(messages);
+      const distinctExternalIds = new Set(externalActors.externals.map((e) => e.externalId));
+      // Codex IMPORTANT: `messages` already had `kind:'system'` rows filtered out
+      // (allPending → messages), so a co-batched system row would NOT poison
+      // turnExternalActors. Check the RAW batch so external+system fails closed.
+      const hasCoBatchedSystemRow = allPending.some((m) => m.kind === 'system');
+      // Codex BLOCKER-1: the reply target must come from the external row(s), not
+      // the full batch (a co-batched board context row could otherwise become the
+      // SEC#11 "current conversation" and let the reply go to the board). Require
+      // every external row to address the SAME non-null cold-DM platform.
+      const externalReplyTargets = new Set(
+        externalRows.map((m) => `${m.channel_type ?? ''}|${m.platform_id ?? ''}`),
+      );
+      const externalReplyConsistent =
+        externalRows.length > 0 &&
+        externalReplyTargets.size === 1 &&
+        !!externalRows[0].platform_id &&
+        !!externalRows[0].channel_type;
+      // The agent provider MUST honor confined-external mode (no built-in fs/bash
+      // tools, no board dirs); a provider without it fails the turn CLOSED rather
+      // than running an external with full board tools.
+      const providerConfines = config.provider.supportsConfinedExternal === true;
+      const externalResolved =
+        !externalActors.poison &&
+        distinctExternalIds.size === 1 &&
+        !hasCoBatchedSystemRow &&
+        externalReplyConsistent &&
+        providerConfines;
+      if (!externalResolved) {
+        // Malformed external+sender, >1 distinct external, mixed with a board
+        // command/system/web row, inconsistent reply target, or a provider that
+        // can't confine → fail CLOSED: drain the whole batch, run nothing.
+        markCompleted(ids);
+        log('RC5-ext: external-actor turn refused (unresolved/mixed/unconfinable batch) — fail closed, batch drained');
+        continue;
+      }
+      // Reply routing is the EXTERNAL row's cold-DM, never the full batch's first
+      // row — a co-batched board context row must not become the reply target.
+      const externalRouting = extractRouting(externalRows);
+      // Pin both channels for the MCP child. turn_actor is poisoned (an external
+      // is never a board person — turnActorSenders already returns poison for an
+      // external row); turn_external_actor resolves to the single external.
+      const externalBoardActor = turnActorSenders(messages);
+      setTurnActor(externalBoardActor.senders, externalBoardActor.poison, externalBoardActor.system);
+      setTurnExternalActor(externalActors.externals, externalActors.poison);
+      // Codex BLOCKER-2: drop any web-origin set from the mixed batch above so the
+      // external reply can't be rewritten into the web-chat path (messages-out.ts).
+      clearCurrentWebOrigin();
+
+      // Prompt from the external command row(s) ONLY. A co-batched board context
+      // row (trigger=0) is excluded here — never leaked into the prompt an
+      // external drives — and is drained with the rest of the batch below.
+      const confinedPrompt = formatMessages(externalRows);
+      // Fresh private (0700) neutral cwd so Claude Code's preset can't auto-load
+      // the board CLAUDE.md and no other process can plant files in it.
+      let confinedCwd: string | null = null;
+      try {
+        confinedCwd = makeConfinedExternalCwd();
+      } catch (err) {
+        // Can't create an isolated cwd → fail CLOSED (don't run in the board cwd).
+        markCompleted(ids);
+        clearTurnActor();
+        clearTurnExternalActor();
+        log(`RC5-ext: external-actor turn refused (no isolated cwd: ${err instanceof Error ? err.message : String(err)}) — fail closed`);
+        continue;
+      }
+
+      setCurrentInReplyTo(externalRouting.inReplyTo);
+      try {
+        const externalQuery = config.provider.query({
+          prompt: confinedPrompt,
+          continuation: undefined, // FRESH — never the board's continuation
+          cwd: confinedCwd, // fresh private dir — no board CLAUDE.md auto-load
+          systemContext: { instructions: EXTERNAL_CONFINED_INSTRUCTIONS },
+          confinedExternal: true, // MCP-only tools, no board additionalDirectories
+        });
+        await runConfinedExternalQuery(externalQuery, externalRouting);
+      } catch (err) {
+        log(`RC5-ext confined external turn error: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        // Codex IMPORTANT: failure-isolated cleanup — each step best-effort so a
+        // throw can't skip channel-clearing (which would leave a stale external
+        // actor authorizing a later turn) or the batch drain below. FLUSH before
+        // DRAIN (a flush re-marks the dedup flag).
+        try {
+          clearCurrentInReplyTo();
+        } catch {
+          /* best-effort */
+        }
+        try {
+          clearCurrentWebOrigin();
+        } catch {
+          /* best-effort */
+        }
+        try {
+          flushPendingCreateCard();
+        } catch {
+          /* best-effort */
+        }
+        try {
+          drainDeterministicMutationFlag();
+        } catch {
+          /* best-effort */
+        }
+        // C3-lifecycle/B7: clear both channels (deleteKey is itself best-effort).
+        clearTurnActor();
+        clearTurnExternalActor();
+        // Remove the per-turn private cwd.
+        try {
+          fs.rmSync(confinedCwd, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+      markCompleted(ids);
+      log('RC5-ext: external-actor turn handled (confined path)');
       continue;
     }
 
@@ -5014,6 +5184,38 @@ interface QueryResult {
   continuation?: string;
 }
 
+/**
+ * RC5-ext P3 (C4c) — run the model for a CONFINED external turn.
+ *
+ * Deliberately NOT processQuery. An external turn must be STATELESS and ISOLATED,
+ * so this runner differs from the board path in two load-bearing ways:
+ *   - NO continuation persisted. processQuery writes setContinuation on `init` so
+ *     a board turn resumes its transcript; here the external turn's session id is
+ *     discarded — the board's stored continuation is never overwritten (board
+ *     transcript stays board-private) and the external never resumes board
+ *     context.
+ *   - NO concurrent follow-up polling/merge. processQuery pushes mid-stream
+ *     follow-ups into the live query; for an external turn that could merge a
+ *     board message into the external's context (a board-private leak), so the
+ *     single confined prompt runs to completion with no pushes. An external
+ *     follow-up that lands mid-stream stays pending and gets its OWN fresh
+ *     confined turn on the next outer poll.
+ * dispatchResultText still runs so the agent's `<message to="external-<id>">`
+ * reply reaches the external's cold-DM via the SEC#11-gated delivery path (which
+ * allows the current external and denies every other destination).
+ */
+async function runConfinedExternalQuery(query: AgentQuery, routing: RoutingContext): Promise<void> {
+  for await (const event of query.events) {
+    handleEvent(event, routing);
+    touchHeartbeat();
+    if (event.type === 'result') {
+      dispatchResultText(event.text ?? '', routing);
+    }
+    // 'init': intentionally NOT persisted (stateless external turn).
+    // 'compacted': a single short external turn does not auto-compact; no-op.
+  }
+}
+
 async function processQuery(
   query: AgentQuery,
   routing: RoutingContext,
@@ -5048,9 +5250,7 @@ async function processQuery(
         // `query.end()` the active BOARD stream before the fail-closed drop. Mark
         // ONLY the external rows completed and return WITHOUT ending the stream;
         // any co-pending board rows stay pending for the next poll tick.
-        const externalPending = selectCommandRows(pending).filter(
-          (m) => (m.kind === 'chat' || m.kind === 'chat-sdk') && parseJsonContent(m.content).actorKind === 'external',
-        );
+        const externalPending = externalActorCommandRows(pending);
         if (externalPending.length > 0) {
           markCompleted(externalPending.map((m) => m.id));
           log('RC5-ext: external-actor follow-up dropped — active board stream untouched (fail closed)');

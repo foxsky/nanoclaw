@@ -49,6 +49,14 @@ export const SECURITY_DENYLIST: readonly string[] = [
   'TeamCreate',
   'TeamDelete',
   'SendMessage',
+  // RC5-ext C4c (Codex): SDK builtins that READ raw MCP resources — they are NOT
+  // in TOOL_ALLOWLIST but, under bypassPermissions, an undenied tool is still
+  // reachable. A confined external turn restricts the visible MCP servers to
+  // nanoclaw, but these are denied for EVERY turn (no nanoclaw agent reads MCP
+  // resources) so an MCP server's resources can never be an exfiltration path.
+  // (Confirmed present in @anthropic-ai/claude-agent-sdk sdk-tools.d.ts.)
+  'ListMcpResources',
+  'ReadMcpResource',
 ];
 
 // PARITY / UX ONLY — not a security boundary. These are deferred SDK builtins

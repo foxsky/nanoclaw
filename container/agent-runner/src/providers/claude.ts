@@ -70,6 +70,21 @@ function isSdkVisibleMcpServer(serverName: string): boolean {
   return mcpAllowPattern(serverName) !== null;
 }
 
+/**
+ * The SDK `allowedTools` for a query. RC5-ext C4c: a CONFINED-external turn gets
+ * NO built-in tools (Bash/Read/Write/Edit/Glob/Grep/… — none of which the
+ * nanoclaw C7 MCP gate can see, so they would be an unguarded fs/bash
+ * exfiltration path) and ONLY the nanoclaw MCP server (C7 then narrows it to the
+ * external-safe whitelist) — never any other installed MCP server. A normal turn
+ * gets the full built-in allowlist plus every visible MCP server.
+ */
+export function computeAllowedTools(confined: boolean, visibleMcpServerNames: string[]): string[] {
+  const mcpPatterns = visibleMcpServerNames.map(mcpAllowPattern).filter((tool): tool is string => tool !== null);
+  return confined
+    ? [mcpAllowPattern('nanoclaw')].filter((tool): tool is string => tool !== null)
+    : [...TOOL_ALLOWLIST, ...mcpPatterns];
+}
+
 export const SDK_SETTING_SOURCES: [] = [];
 
 interface SDKUserMessage {
@@ -322,6 +337,7 @@ const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not fou
 
 export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = true;
+  readonly supportsConfinedExternal = true;
 
   private assistantName?: string;
   private mcpServers: Record<string, McpServerConfig>;
@@ -358,22 +374,38 @@ export class ClaudeProvider implements AgentProvider {
       Object.entries(this.mcpServers).filter(([serverName]) => isSdkVisibleMcpServer(serverName)),
     );
 
+    // RC5-ext C4c — confined-external mode. An authenticated external participant
+    // is driving this turn, so the agent must NOT have any built-in fs/bash tools
+    // (Read/Bash/Glob/… are NOT gated by the nanoclaw C7 MCP gate, so they would
+    // be an unguarded exfiltration path over board-private files) and must NOT see
+    // board `additionalDirectories`. Exposed tools = ONLY the nanoclaw MCP server
+    // (C7 then narrows to the external-safe whitelist). The caller pairs this with
+    // a neutral cwd (no board CLAUDE.md) and a minimal external-only systemContext.
+    const confined = input.confinedExternal === true;
+    // Availability is enforced by `disallowedTools` (SDK_DISALLOWED_TOOLS already
+    // denies Bash/Read/Write/Edit/Glob/Grep/LS/WebFetch/… + ListMcpResources/
+    // ReadMcpResource for EVERY turn) and by RESTRICTING the visible MCP servers —
+    // NOT by `allowedTools`, which under bypassPermissions only auto-approves. In
+    // confined mode expose ONLY the nanoclaw MCP server (so an external can't reach
+    // any board-installed MCP server's tools); the C7 gate then narrows nanoclaw to
+    // the external-safe whitelist. `allowedTools`/`additionalDirectories:[]` are
+    // kept as defense-in-depth.
+    const confinedMcpServers = confined
+      ? Object.fromEntries(Object.entries(visibleMcpServers).filter(([name]) => name === 'nanoclaw'))
+      : visibleMcpServers;
+    const allowedTools = computeAllowedTools(confined, Object.keys(confinedMcpServers));
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
         cwd: input.cwd,
-        additionalDirectories: this.additionalDirectories,
+        additionalDirectories: confined ? [] : this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
         systemPrompt: instructions
           ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions }
           : undefined,
-        allowedTools: [
-          ...TOOL_ALLOWLIST,
-          ...Object.keys(visibleMcpServers)
-            .map(mcpAllowPattern)
-            .filter((tool): tool is string => tool !== null),
-        ],
+        allowedTools,
         disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
         model: this.model,
@@ -382,7 +414,7 @@ export class ClaudeProvider implements AgentProvider {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: SDK_SETTING_SOURCES,
-        mcpServers: visibleMcpServers,
+        mcpServers: confinedMcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
