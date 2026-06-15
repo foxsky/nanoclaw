@@ -9,17 +9,12 @@
  * identity. Returning true consumes the message; false falls through to the
  * router's existing drop.
  *
- * ⚠️ NOT YET REGISTERED — DARK UNTIL P3. The host can authenticate + route an
- * external's content into a board session, but the CONTAINER guards that make
- * that safe (poison `turn_actor` so an external is never bound as a board
- * person; deny deterministic mutation fast-paths for external turns; the
- * external-safe capability mode that default-denies reads/tools; the engine's
- * per-meeting DB grant re-check) are P3 work and do not exist yet. Registering
- * this resolver before P3 would route external content into a board agent's
- * context with only the SEC#13 mutation guard protecting it — leaving the B6
- * content-exfiltration hole open. So this is built + unit-tested here, and
- * `index.ts` deliberately does NOT wire it until P3 lands. See
- * `2026-06-13-rc5ext-inbound-design.md` §C7/§Phasing.
+ * REGISTERED (go-live) in `modules/taskflow/index.ts` via `setUnroutedDmResolver`.
+ * Safe to enable because the CONTAINER guards now exist: the routed row poisons
+ * `turn_actor` (an external is never bound as a board person), the confined
+ * execution path (C4b/C4c) default-denies tools/reads/board-context and runs in a
+ * restricted provider, and the engine re-checks the per-meeting DB grant at
+ * mutation time. See `2026-06-13-rc5ext-inbound-design.md` §C7/§Phasing.
  *
  * Security invariants enforced here (host half):
  *   - AUTH = `externalId` only. The row carries `content.externalActor`

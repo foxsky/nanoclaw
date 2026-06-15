@@ -3198,6 +3198,28 @@ export class TaskflowEngine {
               taskBoardId,
             );
             if (notif) notifications.push(notif);
+          } else if (isExternalSender && task.assignee) {
+            // RC5-ext C4c (Codex R4): an EXTERNAL added a note to their meeting →
+            // ping the meeting OWNER (assignee) so the board learns the external
+            // responded (senderPersonId is null, so the board-person ping above is
+            // skipped). Resolve the assignee's notification target DIRECTLY (not via
+            // resolveNotifTarget's modifier-aware path) so a corrupt person_id can
+            // never collide with the external label and self-skip the ping (Codex
+            // NICE). The external's STORED contact name is a display label only.
+            const ownerRow = this.db
+              .prepare(`SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`)
+              .get(taskBoardId, task.assignee) as { notification_group_jid?: string | null } | undefined;
+            if (ownerRow) {
+              const extRow = this.db
+                .prepare(`SELECT display_name FROM external_contacts WHERE external_id = ?`)
+                .get(senderExternalId) as { display_name?: string } | undefined;
+              const extName = extRow?.display_name?.trim() || 'Participante externo';
+              notifications.push({
+                target_person_id: task.assignee,
+                notification_group_jid: ownerRow.notification_group_jid ?? null,
+                message: `🔔 *Nota de participante externo*\n\n*${task.id}* — ${task.title}\n*De:* ${extName}\n\n• ${out.change}\n\nDigite \`${task.id}\` para ver detalhes.`,
+              });
+            }
           }
           const modName = sender?.name ?? params.sender_name;
           parentNotification = this.buildParentNotification(

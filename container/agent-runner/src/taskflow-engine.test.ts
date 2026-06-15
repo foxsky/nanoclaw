@@ -8554,4 +8554,29 @@ describe('RC5-ext (C4) — external meeting-note grant re-check', () => {
     expect(notes[0].author_actor_type).toBe('external_contact');
     expect(notes[0].author_actor_id).toBe('ext-1');
   });
+
+  // Codex C4c-R4: an external's meeting note pings the meeting OWNER (assignee)
+  // with the external's STORED contact name, so the board learns they responded.
+  it('pings the meeting owner with the external display name when an external adds a note', () => {
+    // Assign M-1 to person-1 (Alexandre); grant ext-1.
+    db.prepare(`UPDATE tasks SET assignee='person-1' WHERE id='M-1' AND board_id=?`).run(BOARD_ID);
+    grant('M-1', 'accepted', future());
+    const r = addNote('M-1');
+    expect(r.success).toBe(true);
+    const notifs = r.notifications ?? [];
+    const owner = notifs.find((n: any) => n.target_person_id === 'person-1');
+    expect(owner, 'meeting owner should be notified').toBeDefined();
+    expect(owner.message).toContain('Maria'); // the external_contacts.display_name
+    expect(owner.message).toContain('participante externo');
+    // person-1's notification_group_jid is NULL in the seed → the ping is still
+    // built (normalizes to a deferred notification downstream, never throws — #399).
+    expect(owner.notification_group_jid).toBeNull();
+  });
+
+  it('does NOT ping an owner who does not exist (unassigned meeting) — no throw', () => {
+    grant('M-2', 'accepted', future()); // M-2 has no assignee
+    const r = addNote('M-2');
+    expect(r.success).toBe(true);
+    expect((r.notifications ?? []).length).toBe(0);
+  });
 });
