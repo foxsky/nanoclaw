@@ -12,6 +12,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
+import { denyIfExternalActorBlocked } from './chat-actor-guard.js';
 import type { McpToolDefinition } from './types.js';
 import { wellFormedError, wellFormedToolResult } from '../well-formed.js';
 
@@ -92,6 +93,12 @@ export async function startMcpServer(
         });
       }
     }
+    // RC5-ext P3 (C7): external-safe capability gate. When the turn resolves to
+    // an authenticated external actor, default-deny every tool but the narrow
+    // grant-scoped flow — the B6 content-confinement control. No-op on normal
+    // (board/system) turns and on the FastAPI/replay surfaces.
+    const externalDeny = denyIfExternalActorBlocked(name, (args ?? {}) as Record<string, unknown>);
+    if (externalDeny) return wellFormedToolResult(externalDeny);
     // A handler that THROWS bypasses wellFormedToolResult: the error propagates
     // and the SDK records it (PostToolUseFailure has no output-rewrite hook), so
     // a lone surrogate in the message would poison the next request. Sanitize

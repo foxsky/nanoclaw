@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
-import { denyIfChatActorUnresolved, requiresChatActor } from './chat-actor-guard.ts';
+import { denyIfChatActorUnresolved, denyIfExternalActorBlocked, requiresChatActor } from './chat-actor-guard.ts';
 import { getRegisteredToolForTesting } from './server.ts';
 import { setVerbatimIds } from './taskflow-helpers.ts';
 import { runAsApprovedReplay } from './replay-flag.ts';
 import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.ts';
+import {
+  __resetTurnExternalActorForTesting,
+  clearTurnExternalActor,
+  setTurnExternalActor,
+} from './turn-external-actor.ts';
 import type { McpToolDefinition } from './types.ts';
 
 // #419 (SEC#13): the ENFORCEMENT half. Binding sender_name to the authenticated
@@ -141,4 +146,74 @@ describe('chat-actor-guard — every board-mutating tool is gated (registry cove
       expect(isActorDeny, `${name} was wrongly gated by requiresChatActor`).toBe(false);
     });
   }
+});
+
+// RC5-ext P3 (C7) — external-safe capability gate (B6 content confinement).
+// On a resolved EXTERNAL turn, DEFAULT-DENY every tool but the grant-scoped
+// flow (add a meeting note; api_admin accept_external_invite). Non-external
+// turns, FastAPI verbatim, and #407 replay are unaffected.
+const ext1 = { externalId: 'ext-1', displayName: 'Maria', sourceDmMgId: 'mg-1', boardId: 'board-x' };
+
+describe('chat-actor-guard — denyIfExternalActorBlocked (C7)', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    __resetTurnExternalActorForTesting();
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-x';
+  });
+  afterEach(() => {
+    clearTurnActor();
+    clearTurnExternalActor();
+    closeSessionDb();
+    setVerbatimIds(false);
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('no env board → no restriction (null)', () => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    setTurnExternalActor([ext1]);
+    expect(denyIfExternalActorBlocked('api_query', {})).toBeNull();
+  });
+
+  it('a NON-external turn (no external resolved) is unrestricted', () => {
+    setTurnActor(['Ana']); // board turn
+    expect(denyIfExternalActorBlocked('api_query', {})).toBeNull();
+    expect(denyIfExternalActorBlocked('api_board_detail', {})).toBeNull();
+  });
+
+  it('an external turn DENIES board reads and arbitrary tools (default-deny)', () => {
+    setTurnExternalActor([ext1]);
+    for (const t of ['api_query', 'api_board_detail', 'api_board_tasks', 'memory_search', 'send_file', 'api_reassign']) {
+      const r = denyIfExternalActorBlocked(t, {});
+      expect(r, `${t} should be denied on an external turn`).not.toBeNull();
+      expect(parse(r!).error_code).toBe('permission_denied');
+    }
+  });
+
+  it('an external turn ALLOWS api_task_add_note through this gate', () => {
+    setTurnExternalActor([ext1]);
+    expect(denyIfExternalActorBlocked('api_task_add_note', { task_id: 'M1' })).toBeNull();
+  });
+
+  it('an external turn allows api_admin ONLY for accept_external_invite', () => {
+    setTurnExternalActor([ext1]);
+    expect(denyIfExternalActorBlocked('api_admin', { action: 'accept_external_invite', task_id: 'M1' })).toBeNull();
+    expect(denyIfExternalActorBlocked('api_admin', { action: 'register_person' })).not.toBeNull();
+    expect(denyIfExternalActorBlocked('api_admin', {})).not.toBeNull(); // no action
+  });
+
+  it('a POISONED external turn (two externals → unresolved) is treated as non-external (gate is no-op; the mutate guards still deny)', () => {
+    setTurnExternalActor([ext1, { ...ext1, externalId: 'ext-2' }]);
+    expect(denyIfExternalActorBlocked('api_query', {})).toBeNull();
+  });
+
+  it('FastAPI verbatim + #407 replay bypass the gate', () => {
+    setTurnExternalActor([ext1]);
+    setVerbatimIds(true);
+    expect(denyIfExternalActorBlocked('api_query', {})).toBeNull();
+    setVerbatimIds(false);
+    runAsApprovedReplay(() => {
+      expect(denyIfExternalActorBlocked('api_query', {})).toBeNull();
+    });
+  });
 });

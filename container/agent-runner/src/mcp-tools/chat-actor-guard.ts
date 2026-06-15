@@ -24,6 +24,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { isApprovedReplay } from './replay-flag.js';
 import { getVerbatimIds } from './taskflow-helpers.js';
 import { getTurnActor } from './turn-actor.js';
+import { getTurnExternalActor } from './turn-external-actor.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse } from './util.js';
 
@@ -49,4 +50,41 @@ export function requiresChatActor(def: McpToolDefinition): McpToolDefinition {
     ...def,
     handler: async (args) => denyIfChatActorUnresolved() ?? def.handler(args),
   };
+}
+
+/**
+ * RC5-ext P3 (C7) — external-safe capability gate: the B6 content-confinement
+ * control. Confining the *recipient* of an external's reply is not enough — an
+ * external turn drives the board agent, which could be prompt-injected into
+ * reading board-private state and exfiltrating it. So when the turn resolves to
+ * an authenticated EXTERNAL actor, DEFAULT-DENY every MCP tool except the narrow
+ * grant-scoped flow (accept the meeting invite; add a note to the granted
+ * meeting). Applied CENTRALLY at the dispatch seam (server.ts) so a newly-added
+ * tool is denied by construction — never opt-in per tool.
+ *
+ * Non-external turns (board person, system/scheduled) are UNAFFECTED — the gate
+ * returns null. Verbatim (FastAPI) and #407 approved replay bypass (server-/
+ * park-authenticated). Note: the whitelisted tools still pass through their own
+ * `requiresChatActor` (board-actor) guard, which denies on an external turn
+ * until the actor-aware guard + engine per-meeting re-check (C4) land — so this
+ * unit confines content WITHOUT yet opening the note/accept flow.
+ */
+const EXTERNAL_SAFE_TOOLS: ReadonlySet<string> = new Set(['api_task_add_note']);
+const EXTERNAL_SAFE_ADMIN_ACTIONS: ReadonlySet<string> = new Set(['accept_external_invite']);
+
+export function denyIfExternalActorBlocked(toolName: string, args: Record<string, unknown>): CallToolResult | null {
+  if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID || getVerbatimIds() || isApprovedReplay()) return null;
+  if (!getTurnExternalActor().resolved) return null; // not an external turn → no capability restriction
+  // External turn: allow ONLY the grant-scoped flow; deny everything else.
+  if (toolName === 'api_admin') {
+    const action = typeof args.action === 'string' ? args.action : '';
+    if (EXTERNAL_SAFE_ADMIN_ACTIONS.has(action)) return null;
+  } else if (EXTERNAL_SAFE_TOOLS.has(toolName)) {
+    return null;
+  }
+  return jsonResponse({
+    success: false,
+    error_code: 'permission_denied',
+    error: 'External participants can only accept their meeting invite and add notes to their own meeting.',
+  });
 }
