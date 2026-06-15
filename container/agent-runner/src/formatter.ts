@@ -200,7 +200,21 @@ function formatChatMessages(messages: MessageInRow[]): string {
 
 function formatSingleChat(msg: MessageInRow): string {
   const content = parseContent(msg.content);
-  const sender = content.sender || content.author?.fullName || content.author?.userName || 'Unknown';
+  // RC5-ext C6: a routed EXTERNAL-participant row carries no board sender. Render
+  // it with the externalActor.displayName behind a NON-authoritative
+  // `actor_type="external_contact"` marker so the agent never treats it as a
+  // board member — identity/authorization are the host-bound channel + the
+  // engine's per-meeting grant, NEVER this (attacker-influenced) display name,
+  // which is escaped like any other text.
+  const isExternal = content.actorKind === 'external';
+  const externalDisplayName =
+    isExternal && content.externalActor && typeof content.externalActor.displayName === 'string'
+      ? content.externalActor.displayName.trim()
+      : '';
+  const sender = isExternal
+    ? externalDisplayName || 'External participant'
+    : content.sender || content.author?.fullName || content.author?.userName || 'Unknown';
+  const actorTypeAttr = isExternal ? ' actor_type="external_contact"' : '';
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
   const text = content.text || '';
   const idAttr = msg.seq != null ? ` id="${msg.seq}"` : '';
@@ -210,7 +224,7 @@ function formatSingleChat(msg: MessageInRow): string {
 
   const fromAttr = originAttr(msg);
 
-  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
+  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}"${actorTypeAttr} time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
 }
 
 /**

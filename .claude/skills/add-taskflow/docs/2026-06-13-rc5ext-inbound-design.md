@@ -150,7 +150,7 @@ Commit chain: `68f2acc4` (R1) · `8c107ba3` (R2) · R3 · R4. Host half clean af
   - Tests: `confined-external.test.ts` (allowedTools restriction), `poll-loop-external-actor.test.ts` (`externalActorCommandRows`), `chat-actor-guard.test.ts` (C4b). Codex R1 = 3 BLOCKER + 2 IMPORTANT + 1 NICE, all fixed; R2 in progress.
 
 ## Remaining before the resolver can be REGISTERED (un-DARK)
-- Final Codex round on C4c clean.
-- **C6 formatter** (`actor_type=external_contact`, displayName, default reply target) — currently external rows render via plain `formatMessages`.
+- ~~Final Codex round on C4c clean.~~ DONE (R4 zero BLOCKER).
+- ~~**C6 formatter** (`actor_type=external_contact`, displayName).~~ DONE: `formatSingleChat` renders an `actorKind:'external'` row with the externalActor.displayName behind a non-authoritative `actor_type="external_contact"` marker (escaped; board rows unaffected). The reply target (`from="external-<id>"`) already came from `originAttr`/P2 `writeDestinations`.
 - **`setUnroutedDmResolver(resolveUnroutedExternalDm)`** in `modules/taskflow/index.ts` — the ONLY switch that takes the whole flow live. Until then everything above is DARK (no external row is ever written into a board session).
-- P4 e2e + the B7 "stale-actor send denied after turn" test.
+- P4 e2e + the B7 "stale-actor send denied after turn" test + the deferred per-owner notification for external notes (Codex C4c-R4 IMPORTANT-2).
