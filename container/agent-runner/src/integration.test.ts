@@ -6,6 +6,9 @@ import { getPendingMessages } from './db/messages-in.js';
 import { getContinuation, setContinuation } from './db/session-state.js';
 import { setupEngineDb, applyBoardConfigColumns } from './mcp-tools/taskflow-test-fixtures.js';
 import { MockProvider } from './providers/mock.js';
+import type { AgentProvider, AgentQuery, ProviderEvent, QueryInput } from './providers/types.js';
+import { getTurnActor } from './mcp-tools/turn-actor.js';
+import { getTurnExternalActor } from './mcp-tools/turn-external-actor.js';
 import { runPollLoop } from './poll-loop.js';
 
 beforeEach(() => {
@@ -1629,6 +1632,136 @@ class CountingProvider extends MockProvider {
     return super.query(input);
   }
 }
+
+// RC5-ext: a provider that OPTS IN to confined-external mode, records the
+// QueryInput it was handed, and runs a ONE-SHOT stream that ENDS after the
+// result — modelling a real external turn (so runConfinedExternalQuery's
+// for-await completes and its turn-boundary cleanup/finally actually runs).
+class CapturingExternalProvider implements AgentProvider {
+  readonly supportsNativeSlashCommands = false;
+  readonly supportsConfinedExternal = true;
+  lastInput: QueryInput | null = null;
+  constructor(private readonly reply: string) {}
+  isSessionInvalid(): boolean {
+    return false;
+  }
+  query(input: QueryInput): AgentQuery {
+    this.lastInput = input;
+    const reply = this.reply;
+    const events: AsyncIterable<ProviderEvent> = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'init', continuation: 'ext-session-should-not-persist' };
+        yield { type: 'result', text: reply };
+        // stream ENDS here — a one-shot external turn (no follow-up wait).
+      },
+    };
+    return { push() {}, end() {}, events, abort() {} };
+  }
+}
+
+// RC5-ext P3 (P4) — end-to-end: a host-authenticated external DM row drives the
+// poll-loop's CONFINED external path. Asserts the whole chain: confined provider
+// invocation (confinedExternal + neutral cwd + minimal external prompt + FRESH
+// continuation), the prompt carrying ONLY the external row rendered
+// external_contact (C6), the reply delivered to the external's own cold-DM, the
+// board continuation never polluted (statelessness), the channels cleared after
+// the turn (B7), and the batch drained.
+describe('poll loop — RC5-ext confined external turn (P4 e2e)', () => {
+  const COLD_DM = '5585999991234@s.whatsapp.net';
+
+  it('routes an external DM through the confined path end-to-end', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    setupEngineDb('board-test', { withBoardAdmins: true });
+    // The external's reply destination (host writes this via writeDestinations).
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('external-ext-1', 'External ext-1', 'channel', 'whatsapp', ?, NULL)`,
+      )
+      .run(COLD_DM);
+    // The host-written external-actor row (external-dm-route.ts shape): no sender,
+    // actorKind:'external', externalActor envelope, from='external-<id>', and the
+    // delivery address = the external's cold-DM mg.
+    insertMessage(
+      'rc5ext:1',
+      {
+        text: 'a caminho',
+        actorKind: 'external',
+        externalActor: { externalId: 'ext-1', displayName: 'Maria', sourceDmMgId: 'mg-x', boardId: 'board-test' },
+        from: 'external-ext-1',
+      },
+      { platformId: COLD_DM, channelType: 'whatsapp' },
+    );
+
+    const provider = new CapturingExternalProvider('<message to="external-ext-1">Recebido, Maria!</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    // The one-shot stream ends → the confined turn's finally clears the channels.
+    await waitFor(() => !getTurnExternalActor().resolved, 2000);
+    controller.abort();
+
+    // (1) Confined provider invocation.
+    expect(provider.lastInput).not.toBeNull();
+    expect(provider.lastInput!.confinedExternal).toBe(true);
+    expect(provider.lastInput!.cwd).not.toBe('/tmp'); // a fresh mkdtemp dir, not the board cwd
+    expect(provider.lastInput!.cwd).toContain('nanoclaw-ext-confined-');
+    expect(provider.lastInput!.systemContext?.instructions ?? '').toContain('EXTERNAL meeting participant');
+    expect(provider.lastInput!.continuation).toBeUndefined(); // FRESH — never the board's
+
+    // (2) Prompt = the external row only, rendered as external_contact (C6).
+    expect(provider.lastInput!.prompt).toContain('actor_type="external_contact"');
+    expect(provider.lastInput!.prompt).toContain('a caminho');
+
+    // (3) Reply delivered to the external's own cold-DM.
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].platform_id).toBe(COLD_DM);
+    expect(JSON.parse(out[0].content).text).toContain('Recebido, Maria');
+
+    // (4) Statelessness — the external turn's session id is never persisted.
+    expect(getContinuation('mock')).toBeUndefined();
+
+    // (5) B7 — both per-turn actor channels cleared after the turn.
+    expect(getTurnExternalActor().resolved).toBe(false);
+    expect(getTurnActor().resolved).toBe(false);
+
+    // (6) Batch drained.
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('fails CLOSED (no model run) when the provider does NOT support confined mode', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    setupEngineDb('board-test', { withBoardAdmins: true });
+    insertMessage(
+      'rc5ext:2',
+      {
+        text: 'oi',
+        actorKind: 'external',
+        externalActor: { externalId: 'ext-1', displayName: 'Maria', sourceDmMgId: 'mg-x', boardId: 'board-test' },
+        from: 'external-ext-1',
+      },
+      { platformId: COLD_DM, channelType: 'whatsapp' },
+    );
+
+    // A plain MockProvider does NOT set supportsConfinedExternal → fail closed.
+    const provider = new CountingProvider({}, () => 'should never run');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 1500);
+
+    await waitFor(() => getPendingMessages().length === 0, 1500);
+    controller.abort();
+
+    expect(provider.queryCalls).toBe(0); // the model never ran
+    expect(getUndeliveredMessages()).toHaveLength(0); // nothing delivered
+    expect(getTurnExternalActor().resolved).toBe(false);
+
+    await loopPromise.catch(() => {});
+  });
+});
 
 describe('poll loop — provider error recovery', () => {
   it('writes error to outbound and continues loop on provider throw', async () => {
