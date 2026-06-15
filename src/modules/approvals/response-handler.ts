@@ -18,12 +18,13 @@ import type { ResponsePayload } from '../../response-registry.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { PendingApproval } from '../../types.js';
-import { ONECLI_ACTION, resolveOneCLIApproval } from './onecli-approvals.js';
+import { ONECLI_ACTION, resolveOneCLIApproval, responderIdFromPayload } from './onecli-approvals.js';
 import { getApprovalHandler } from './primitive.js';
 
 export async function handleApprovalsResponse(payload: ResponsePayload): Promise<boolean> {
-  // OneCLI credential approvals — resolved via in-memory Promise first.
-  if (resolveOneCLIApproval(payload.questionId, payload.value)) {
+  // OneCLI credential approvals — resolved via in-memory Promise first. Pass the namespaced
+  // responder id so resolveOneCLIApproval can re-authorize who actually responded.
+  if (resolveOneCLIApproval(payload.questionId, payload.value, responderIdFromPayload(payload))) {
     return true;
   }
 

@@ -91,6 +91,20 @@ async function main(): Promise<void> {
 
   // Read v1 tasks
   const v1Db = new Database(v1DbPath, { readonly: true, fileMustExist: true });
+  // Older v1 installs predate the scheduled_tasks table. Without this guard the SELECT
+  // below throws → main().catch prints FAIL: and exits non-zero → run_step classifies a
+  // non-SKIPPED non-zero as a HARD failure → migrate-v2.sh rolls back with v1 already
+  // stopped. Treat a missing table as "nothing to migrate" (mirrors the sibling
+  // src/modules/taskflow/migrate-scheduled-tasks.ts scheduledTasksTableExists guard).
+  const hasTasksTable = v1Db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`)
+    .get();
+  if (!hasTasksTable) {
+    v1Db.close();
+    // Non-zero so run_step routes to the skipped branch, not silent "success" or a FAIL.
+    console.log('SKIPPED:no scheduled_tasks table');
+    process.exit(1);
+  }
   const allTasks = v1Db.prepare('SELECT * FROM scheduled_tasks').all() as V1Task[];
   v1Db.close();
 

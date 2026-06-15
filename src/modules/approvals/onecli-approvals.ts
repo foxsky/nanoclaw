@@ -41,6 +41,46 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 interface PendingState {
   resolve: (decision: Decision) => void;
   timer: NodeJS.Timeout;
+  /** Snapshot of the eligible approver ids (namespaced `<channel>:<handle>`) at request time.
+   *  Only a responder in this set may resolve the approval — see resolveOneCLIApproval. */
+  approvers: string[];
+}
+
+/**
+ * True only if `responder` is one of the eligible approvers. Fails CLOSED on an empty
+ * responder (an unverifiable clicker can't be authorized). `responder` and `approvers`
+ * are both the namespaced users(id) form (`<channel>:<handle>`).
+ */
+export function isAuthorizedResponder(responder: string, approvers: string[]): boolean {
+  return responder !== '' && approvers.includes(responder);
+}
+
+/**
+ * Namespace a response's raw platform clicker id into the `<channel>:<handle>` form that
+ * pickApprover / user_roles store, so it can be compared in a privilege check. Returns ''
+ * (→ fail closed) when the channel did not surface who clicked.
+ */
+export function responderIdFromPayload(payload: { userId: string | null; channelType: string }): string {
+  if (!payload.userId || !payload.channelType) return '';
+  return `${payload.channelType}:${payload.userId}`;
+}
+
+/**
+ * Test-only seam: seed a pending approval so resolveOneCLIApproval's authorization gate can be
+ * exercised without the full handleRequest delivery path. The seeded timer is cleared by
+ * stopOneCLIApprovalHandler().
+ */
+export function __seedPendingForTest(approvalId: string, approvers: string[]): { resolved: Decision | null } {
+  const box: { resolved: Decision | null } = { resolved: null };
+  const timer = setTimeout(() => undefined, 600_000);
+  pending.set(approvalId, {
+    resolve: (d) => {
+      box.resolved = d;
+    },
+    timer,
+    approvers,
+  });
+  return box;
 }
 
 const pending = new Map<string, PendingState>();
@@ -64,10 +104,26 @@ function shortApprovalId(): string {
   return `oa-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Called from the approvals response handler when a card button is clicked. */
-export function resolveOneCLIApproval(approvalId: string, selectedOption: string): boolean {
+/**
+ * Called from the approvals response handler when a card button is clicked (or a response
+ * otherwise arrives). `responder` is the namespaced `<channel>:<handle>` id of who responded.
+ */
+export function resolveOneCLIApproval(approvalId: string, selectedOption: string, responder: string): boolean {
   const state = pending.get(approvalId);
   if (!state) return false;
+  // Re-authorize the RESPONDER. The response path keys only on the (short) approval id, so
+  // without this any user who can produce a response carrying that id — a different chat/user,
+  // or a forged/replayed response — could approve a credentialed action. Swallow (claim) an
+  // unauthorized response so it does NOT fall through and delete the row, but leave the
+  // decision UNRESOLVED so a genuine approver can still act (or it expires → deny).
+  if (!isAuthorizedResponder(responder, state.approvers)) {
+    log.warn('OneCLI approval response ignored: responder is not an eligible approver', {
+      approvalId,
+      responder,
+      eligibleApprovers: state.approvers,
+    });
+    return true;
+  }
   pending.delete(approvalId);
   clearTimeout(state.timer);
 
@@ -78,7 +134,7 @@ export function resolveOneCLIApproval(approvalId: string, selectedOption: string
   deletePendingApproval(approvalId);
 
   state.resolve(decision);
-  log.info('OneCLI approval resolved', { approvalId, decision });
+  log.info('OneCLI approval resolved', { approvalId, decision, responder });
   return true;
 }
 
@@ -210,7 +266,7 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
       resolve('deny');
     }, timeoutMs);
 
-    pending.set(approvalId, { resolve, timer });
+    pending.set(approvalId, { resolve, timer, approvers });
   });
 }
 

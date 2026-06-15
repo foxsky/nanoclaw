@@ -220,6 +220,19 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
     expect(r.status).not.toBe(0);
   });
 
+  it('tasks.ts (v1 DB predates the scheduled_tasks table) SKIPS — never FAILs into a mid-cutover rollback', () => {
+    // Old v1 installs have a messages.db but no scheduled_tasks table. The unguarded
+    // `SELECT * FROM scheduled_tasks` threw → main().catch printed FAIL: and exited
+    // non-zero → run_step classifies a non-SKIPPED non-zero as a HARD failure →
+    // migrate-v2.sh rollback_to_v1_no_v2 fires with v1 already stopped. It MUST be a
+    // graceful SKIP (non-zero so run_step routes to skipped, NOT a FAIL that rolls back).
+    const v1 = v1WithMessagesDb((d) => d.exec(`CREATE TABLE chats (jid TEXT)`)); // no scheduled_tasks
+    const r = runStep('tasks.ts', [v1], { cwd: tmp() });
+    expect(r.stdout).toMatch(/SKIPPED:no scheduled_tasks table/);
+    expect(r.status).not.toBe(0); // skipped branch (non-zero) ...
+    expect(`${r.stdout}${r.stderr}`).not.toMatch(/FAIL:/); // ... NOT a hard FAIL (which triggers rollback)
+  });
+
   it('db.ts (v1 has no registered groups)', () => {
     const v1 = v1WithMessagesDb((d) =>
       d.exec(
