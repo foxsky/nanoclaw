@@ -1464,7 +1464,7 @@ function parseSingleChat(message: Pick<MessageInRow, 'kind' | 'content'>): { sen
  * #419: non-chat content must not ride a co-batched chat actor). This is the ONE
  * derivation of the per-turn sender — the MCP child only READS the result.
  */
-function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: boolean; system: boolean } {
+export function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: boolean; system: boolean } {
   const cmd = selectCommandRows(rows);
   const senders: string[] = [];
   let poison = false;
@@ -1472,7 +1472,14 @@ function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: bo
   for (const row of cmd) {
     const isChat = row.kind === 'chat' || row.kind === 'chat-sdk';
     if (isChat) {
-      anyChat = true;
+      anyChat = true; // a chat row (even an external one) is never a pure-system turn
+      // RC5-ext: an external-actor row is NEVER a board sender — POISON turn_actor
+      // even if it (malformed/spoofed) carries a `sender`, so board XOR external
+      // can never both resolve in one turn.
+      if (parseJsonContent(row.content).actorKind === 'external') {
+        poison = true;
+        continue;
+      }
       const parsed = parseSingleChat(row);
       if (parsed && parsed.sender) senders.push(parsed.sender);
       else poison = true; // a chat row with no authenticated sender
@@ -1498,6 +1505,12 @@ function parseExternalActor(message: Pick<MessageInRow, 'kind' | 'content'>): Ex
   if (message.kind !== 'chat' && message.kind !== 'chat-sdk') return null;
   const content = parseJsonContent(message.content);
   if (content.actorKind !== 'external') return null;
+  // Defense-in-depth: a legit external row carries NO `sender` (the host never
+  // writes one). A row claiming actorKind:'external' that ALSO has a sender is
+  // malformed/spoofed — reject it so it resolves NEITHER channel (turnActorSenders
+  // already poisons turn_actor for it; returning null here poisons the external
+  // channel too via the turnExternalActors loop).
+  if (typeof content.sender === 'string' && content.sender.trim()) return null;
   const ea = content.externalActor;
   if (!ea || typeof ea !== 'object') return null;
   const e = ea as Record<string, unknown>;
@@ -1520,6 +1533,16 @@ function parseExternalActor(message: Pick<MessageInRow, 'kind' | 'content'>): Ex
  * enforcing board-person XOR external per turn. Two distinct externals are both
  * kept so getTurnExternalActor sees >1 and stays unresolved (over-auth defeat).
  */
+/** True iff any wake-eligible (trigger=1) row is marked actorKind:'external' —
+ *  including a malformed external+sender row. The poll-loop fail-closed gate keys
+ *  on this (the row marker), not on channel resolution, so a row that resolves
+ *  NEITHER channel is still skipped rather than processed as a board command. */
+export function batchHasExternalActorRow(rows: MessageInRow[]): boolean {
+  return selectCommandRows(rows).some(
+    (r) => (r.kind === 'chat' || r.kind === 'chat-sdk') && parseJsonContent(r.content).actorKind === 'external',
+  );
+}
+
 export function turnExternalActors(rows: MessageInRow[]): { externals: ExternalActorContext[]; poison: boolean } {
   const cmd = selectCommandRows(rows);
   const externals: ExternalActorContext[] = [];
@@ -4458,6 +4481,22 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // loop. The agent prompt + markCompleted below still use the FULL `keep`, so context is
     // preserved and drained exactly as before — only command DETECTION is wake-row-scoped.
     const commandRows = selectCommandRows(keep);
+
+    // RC5-ext (Codex P3 BLOCKER-2/3): an EXTERNAL-actor turn must NEVER run the
+    // board-operator deterministic fast-paths (they read/mutate board state with
+    // no actor gate), receive the board context preamble, or resume the board
+    // continuation — all of which bypass MCP dispatch and so are NOT covered by
+    // the C7 tool gate. The confined external flow (no board context + C7 +
+    // engine per-meeting re-check, C4) is not built yet, so fail CLOSED: skip the
+    // whole turn. Keyed on the row marker (not channel resolution) so a malformed
+    // external+sender row is caught too. clear both channels at this boundary.
+    if (batchHasExternalActorRow(keep)) {
+      clearTurnActor();
+      clearTurnExternalActor();
+      markCompleted(keep.map((m) => m.id));
+      log('RC5-ext: external-actor turn skipped — confined flow not yet enabled (fail closed)');
+      continue;
+    }
 
     const taskflowGreeting = taskflowPureGreetingReply(commandRows);
     if (taskflowGreeting) {

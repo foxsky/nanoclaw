@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { turnExternalActors } from './poll-loop.ts';
+import { batchHasExternalActorRow, turnActorSenders, turnExternalActors } from './poll-loop.ts';
 import type { MessageInRow } from './db/messages-in.ts';
 
 // RC5-ext P3 — the poll-loop derivation of the per-turn EXTERNAL actor.
@@ -76,9 +76,45 @@ describe('turnExternalActors — over-auth defeat + malformed', () => {
     expect(r.poison).toBe(true);
   });
 
+  it('Codex B1: a malformed external row that ALSO carries a sender poisons BOTH channels', () => {
+    const malformed = extRow('ext-1', { /* externalActor extras */ });
+    // inject a board sender into the same external row
+    (malformed as { content: string }).content = JSON.stringify({
+      text: 'hi',
+      sender: 'BossManager',
+      actorKind: 'external',
+      externalActor: { externalId: 'ext-1', displayName: 'X', sourceDmMgId: 'mg', boardId: 'b' },
+    });
+    // external channel: rejected (sender present) → no external resolves
+    const ext = turnExternalActors([malformed]);
+    expect(ext.externals).toHaveLength(0);
+    expect(ext.poison).toBe(true);
+    // board channel: the external row never yields a board sender → poisoned
+    const board = turnActorSenders([malformed]);
+    expect(board.senders).toHaveLength(0);
+    expect(board.poison).toBe(true);
+    expect(board.system).toBe(false); // a chat row, not a pure-system turn
+  });
+
   it('no command rows → empty + not poisoned (unresolved by count)', () => {
     const r = turnExternalActors([contextRow()]);
     expect(r.externals).toHaveLength(0);
     expect(r.poison).toBe(false);
+  });
+});
+
+describe('batchHasExternalActorRow — the fail-closed gate trigger (Codex B2/B3)', () => {
+  it('true for a pure external turn', () => {
+    expect(batchHasExternalActorRow([extRow('ext-1')])).toBe(true);
+  });
+  it('true for a malformed external+sender row (keys on the marker, not resolution)', () => {
+    const malformed = { kind: 'chat', trigger: 1, content: JSON.stringify({ text: 'x', sender: 'A', actorKind: 'external' }) } as unknown as MessageInRow;
+    expect(batchHasExternalActorRow([malformed])).toBe(true);
+  });
+  it('false for a board turn, a system turn, and trigger=0 external context', () => {
+    expect(batchHasExternalActorRow([boardRow('Ana')])).toBe(false);
+    expect(batchHasExternalActorRow([systemRow()])).toBe(false);
+    const extCtx = { kind: 'chat', trigger: 0, content: JSON.stringify({ text: 'x', actorKind: 'external' }) } as unknown as MessageInRow;
+    expect(batchHasExternalActorRow([extCtx])).toBe(false); // not wake-eligible
   });
 });
