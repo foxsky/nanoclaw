@@ -5042,6 +5042,21 @@ async function processQuery(
       try {
         const pending = getPendingMessages();
 
+        // RC5-ext (Codex P3 r3): drop any EXTERNAL-actor follow-up BEFORE the
+        // runner-command / web-boundary checks below — otherwise an external row
+        // whose text is `/clear` /`/cost` (or that crosses the web boundary) would
+        // `query.end()` the active BOARD stream before the fail-closed drop. Mark
+        // ONLY the external rows completed and return WITHOUT ending the stream;
+        // any co-pending board rows stay pending for the next poll tick.
+        const externalPending = selectCommandRows(pending).filter(
+          (m) => (m.kind === 'chat' || m.kind === 'chat-sdk') && parseJsonContent(m.content).actorKind === 'external',
+        );
+        if (externalPending.length > 0) {
+          markCompleted(externalPending.map((m) => m.id));
+          log('RC5-ext: external-actor follow-up dropped — active board stream untouched (fail closed)');
+          return;
+        }
+
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands
         // (/compact, /cost, …) only dispatch when they're the first input
@@ -5114,15 +5129,8 @@ async function processQuery(
         if (done) return;
 
         const keptIds = keep.map((m) => m.id);
-        // RC5-ext (Codex P3 r2): the active stream is a BOARD turn. An external
-        // row arriving mid-stream must NOT be pushed into the board's query/
-        // continuation, nor run the follow-up deterministic handlers. Drop it
-        // (fail closed) — do NOT touch the board's turn_actor (still active).
-        if (batchHasExternalActorRow(keep)) {
-          markCompleted(keptIds);
-          log('RC5-ext: external-actor follow-up dropped from active board stream (fail closed)');
-          return;
-        }
+        // (RC5-ext external-actor follow-ups are dropped at the top of this poll
+        // IIFE, before the runner-command/web-boundary checks — see above.)
         // #413: command detection on follow-up polls is wake-row-scoped too (see main loop).
         const commandRows = selectCommandRows(keep);
         const recentContext = [...recentOutboundContents(), ...recentInboundContents()];
