@@ -23,6 +23,17 @@ function log(msg: string): void {
 const allTools: McpToolDefinition[] = [];
 const toolMap = new Map<string, McpToolDefinition>();
 
+/** The MCP server identity announced in `initialize` — also the `serverInfo`
+ *  the published contract pins (`contract.ts`), so both can't drift. */
+export const SERVER_INFO = { name: 'nanoclaw', version: '2.0.0' } as const;
+
+/** Every tool registered so far (registration order). Used by the contract
+ *  generator (`contract.ts`) to publish the FastAPI surface; the running server
+ *  filters this same set by the allowlist. */
+export function getAllRegisteredTools(): McpToolDefinition[] {
+  return allTools.slice();
+}
+
 export function registerTools(tools: McpToolDefinition[]): void {
   for (const t of tools) {
     if (toolMap.has(t.tool.name)) {
@@ -66,7 +77,7 @@ export async function startMcpServer(
   allow?: ReadonlySet<string>,
   argGuards?: ReadonlyMap<string, ToolArgGuard>,
 ): Promise<void> {
-  const server = new Server({ name: 'nanoclaw', version: '2.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server(SERVER_INFO, { capabilities: { tools: {} } });
   const exposed = allow ? allTools.filter((t) => allow.has(t.tool.name)) : allTools;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
