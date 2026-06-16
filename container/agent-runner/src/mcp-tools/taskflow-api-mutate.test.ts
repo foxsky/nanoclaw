@@ -539,7 +539,10 @@ describe('api_move MCP tool (A11.1)', () => {
     expect(result.data.task_id).toBe(taskId);
     expect(result.data.from_column).toBe('inbox');
     expect(result.data.to_column).toBe('in_progress');
-    expect(result.data.formatted).toContain(`${taskId} — Move me`);
+    // Single move now emits the V1-faithful move CARD (not the one-liner).
+    expect(result.data.formatted).toContain('✅ *Tarefa movida*');
+    expect(result.data.formatted).toContain(`*${taskId}* — Move me`);
+    expect(result.data.formatted).toContain('🔄 *Coluna:* Em Andamento');
     expect(Array.isArray(result.notification_events)).toBe(true);
   });
 

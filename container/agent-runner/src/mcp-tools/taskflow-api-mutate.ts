@@ -376,7 +376,7 @@ export function finalizeCreatedTaskResult(
   // — there is no following reparent to supersede the standalone card, and the
   // standalone card would hide the project linkage. buildCreateCard → null when
   // no parent (falls through to the standalone variant).
-  const createdCard = buildCreateCard(data) ?? buildCreatedTaskCard(data);
+  const createdCard = buildCreateCard(data) ?? buildInboxCard(data) ?? buildCreatedTaskCard(data);
   if (createdCard) setPendingCreateCard(result.task_id, createdCard);
   // Assignee notification (#397): dispatch the engine's create-assignee
   // notification exactly as move/admin/reassign do (finalizeMutationResult) —
@@ -669,6 +669,18 @@ export function buildCreateCard(data: {
   ].join('\n');
 }
 
+// Inbox-capture card (V1: "📥 *Capturado no Inbox*"). An inbox create has no
+// assignee/column line — only header + separator + blank + id/title. Wired into
+// finalizeCreatedTaskResult before buildCreatedTaskCard (which returns null for inbox).
+export function buildInboxCard(data: { id?: unknown; title?: unknown; column?: unknown }): string | null {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const id = str(data.id);
+  const title = str(data.title);
+  if (!id || !title) return null;
+  if (str(data.column) !== 'inbox') return null;
+  return ['📥 *Capturado no Inbox*', '━━━━━━━━━━━━━━', '', `*${id}* — ${title}`].join('\n');
+}
+
 // BYTE-FAITHFUL mirror of v1's standalone (no-reparent) create card.
 // Ground truth: sec-secti GATE v1 final_responses — simple →
 // "✅ *Tarefa criada*", project → "✅ *Projeto criado*" (Phase-3 #7).
@@ -683,6 +695,8 @@ export function buildCreatedTaskCard(data: {
   type?: unknown;
   assignee?: unknown;
   column?: unknown;
+  due_date?: unknown;
+  priority?: unknown;
 }): string | null {
   const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
   const id = str(data.id);
@@ -694,14 +708,123 @@ export function buildCreatedTaskCard(data: {
   if (column !== 'next_action') return null;
   if (type !== 'simple' && type !== 'project') return null;
   const isProject = type === 'project';
-  return [
+  const lines = [
     isProject ? '✅ *Projeto criado*' : '✅ *Tarefa criada*',
     '━━━━━━━━━━━━━━',
     '',
     `*${id}* — ${title}`,
     `👤 *${isProject ? 'Atribuído' : 'Atribuída'} a:* ${assignee}`,
     '⏭️ *Coluna:* Próximas Ações',
-  ].join('\n');
+  ];
+  // Only-when-set trailing bullets (V1 ground truth: T124 Prazo, T126 Prazo+Prioridade).
+  // Note bullet intentionally NOT emitted — a create has no note/description source on `data`.
+  const due = str(data.due_date);
+  const prazo = /^\d{4}-\d{2}-\d{2}/.test(due)
+    ? `${due.slice(8, 10)}/${due.slice(5, 7)}/${due.slice(0, 4)}`
+    : '';
+  const priority = str(data.priority);
+  const trailing: string[] = [];
+  if (prazo) trailing.push(`• ⏰ Prazo: ${prazo}`);
+  if (priority) trailing.push(`• Prioridade: ${priority}`);
+  if (trailing.length > 0) {
+    lines.push('', ...trailing);
+  }
+  return lines.join('\n');
+}
+
+// Move/conclude confirmation card — mirrors the create-card family so a state
+// transition returns a full task card (V1 ground truth), not the addMoveFormattedResult
+// one-liner. Column rendered with the same emoji+label map the board/notification
+// cards use (ROLLUP_COLUMN_LABELS). Trailing bullets (Prazo / Prioridade / Nota) are
+// shown ONLY when the field is set (global only-when-set rule) — unlike the detail
+// view, a move card omits Prazo entirely when there is no due date.
+function moveCardColumnLine(column: string): string {
+  const combined = ROLLUP_COLUMN_LABELS[column];
+  if (!combined) return `*Coluna:* ${columnLabel(column)}`;
+  const sp = combined.indexOf(' ');
+  const emoji = sp === -1 ? '' : combined.slice(0, sp);
+  const label = sp === -1 ? combined : combined.slice(sp + 1);
+  return `${emoji} *Coluna:* ${label}`;
+}
+
+export function buildMoveCard(data: {
+  id?: unknown;
+  title?: unknown;
+  type?: unknown;
+  assignee?: unknown;
+  column?: unknown;
+  due_date?: unknown;
+  priority?: unknown;
+  note?: unknown;
+}): string | null {
+  const s = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const id = s(data.id);
+  const title = s(data.title);
+  const assignee = s(data.assignee);
+  const column = s(data.column);
+  if (!id || !title || !assignee || !column) return null;
+  const isProject = s(data.type) === 'project';
+  const due = s(data.due_date);
+  const priority = s(data.priority); // no default — bullet only when explicitly set
+  const note = s(data.note);
+  const lines = [
+    isProject ? '✅ *Projeto movido*' : '✅ *Tarefa movida*',
+    '━━━━━━━━━━━━━━',
+    '',
+    `*${id}* — ${title}`,
+    `👤 *${isProject ? 'Atribuído' : 'Atribuída'} a:* ${assignee}`,
+    moveCardColumnLine(column),
+  ];
+  // Only-when-set trailing bullets; the preceding blank line appears only if ≥1 bullet fires.
+  const bullets: string[] = [];
+  if (/^\d{4}-\d{2}-\d{2}/.test(due)) {
+    bullets.push(`• ⏰ Prazo: ${due.slice(8, 10)}/${due.slice(5, 7)}/${due.slice(0, 4)}`);
+  }
+  if (priority) bullets.push(`• Prioridade: ${priority}`);
+  if (note) bullets.push(`• 📝 Nota: ${note}`);
+  if (bullets.length > 0) lines.push('', ...bullets);
+  return lines.join('\n');
+}
+
+/**
+ * Fail-soft lookup of the fields buildMoveCard needs (assignee DISPLAY name,
+ * due_date, priority, type) for a just-moved task — mirrors buildReassignInfo.
+ * The move uses board_id=boardId so the task is reachable at (taskId, boardId).
+ * serializeApiTask resolves assignee person_id → display name and surfaces
+ * due_date/priority as null when unset (so buildMoveCard's only-when-set rule
+ * keys off them cleanly). Any not-found / throw returns null → the move degrades
+ * to the addMoveFormattedResult one-liner rather than failing the committed move.
+ */
+function buildMoveCardData(
+  engine: TaskflowEngine,
+  db: Database,
+  boardId: string,
+  taskId: string,
+  toColumn: string,
+): Parameters<typeof buildMoveCard>[0] | null {
+  try {
+    const row = db
+      .prepare(`SELECT * FROM tasks WHERE id = ? AND board_id = ?`)
+      .get(taskId, boardId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const data = engine.serializeApiTask(row) as {
+      assignee?: unknown;
+      due_date?: unknown;
+      priority?: unknown;
+      type?: unknown;
+    };
+    return {
+      id: taskId,
+      title: typeof row.title === 'string' ? row.title : '',
+      type: data.type,
+      assignee: data.assignee,
+      column: toColumn,
+      due_date: data.due_date,
+      priority: data.priority,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // Shared header for v1's "atualizada" card variants (update, add_note).
@@ -1486,6 +1609,15 @@ export const apiMoveTool: McpToolDefinition = {
           subtask_id: subtaskId,
           confirmed_task_id: confirmedTaskId,
         });
+        // V1-faithful full move/conclude CARD replaces the one-liner. Fail-soft:
+        // the lookup lives caller-side (mirrors buildReassignInfo) so a post-commit
+        // throw never flips the committed move to failed; addMoveFormattedResult
+        // stays the fallback (it no-ops once result.formatted is set).
+        if (result.success && !result.formatted && result.task_id && result.to_column) {
+          const cardData = buildMoveCardData(engine, db, boardId, result.task_id, result.to_column);
+          const card = cardData ? buildMoveCard(cardData) : null;
+          if (card) result.formatted = card;
+        }
         return finalizeMutationResult(addMoveFormattedResult(result, action), boardId);
       }
 
