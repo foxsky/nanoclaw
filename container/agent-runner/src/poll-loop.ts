@@ -2425,6 +2425,12 @@ function formatFortalezaMeetingWhen(iso: string): string {
   return `${weekday}, ${day}/${month} às ${hour}h${minute === '00' ? '' : minute}`;
 }
 
+// V1 meeting-card time form: "weekday, DD/MM às HH:MM" (colon, incl half-hours).
+// formatFortalezaMeetingWhen yields "…às HHh" / "…às HHhMM"; normalize the time.
+export function formatMeetingWhenColon(iso: string): string {
+  return formatFortalezaMeetingWhen(iso).replace(/(\d{2})h(\d{2})?$/, (_m, h, mm) => `${h}:${mm ?? '00'}`);
+}
+
 /**
  * FU-1: the org-meeting create/draft/forward flow carries a NAIVE Fortaleza-local
  * scheduled time (`scheduledAtLocalIso`, no TZ designator). The two formatters above
@@ -2576,7 +2582,7 @@ function handleTaskflowCreateMeeting(
   }
   writeReply(
     routing,
-    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}${parentLine}\n📅 *Data:* ${formatFortalezaDateTimePt(fortalezaNaiveToUtcIso(action.scheduledAt))}\n⏭️ *Coluna:* Próximas Ações`,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}${parentLine}\n📅 *Data:* ${formatMeetingWhenColon(fortalezaNaiveToUtcIso(action.scheduledAt))}\n⏭️ *Coluna:* Próximas Ações`,
   );
   return true;
 }
@@ -2965,7 +2971,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
   const phone = destination.phoneMasked ? ` (${destination.phoneMasked})` : '';
   writeReply(
     routing,
-    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}\n📅 ${formatFortalezaDateTimePt(fortalezaNaiveToUtcIso(action.scheduledAt))}\n\n${participantName} tem quadro próprio na organização, então não pude adicioná-la diretamente como participante aqui — enviei o convite para o quadro dela${phone}. Uma nota foi registrada na reunião.`,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}\n📅 ${formatMeetingWhenColon(fortalezaNaiveToUtcIso(action.scheduledAt))}\n\n${participantName} tem quadro próprio na organização, então não pude adicioná-la diretamente como participante aqui — enviei o convite para o quadro dela${phone}. Uma nota foi registrada na reunião.`,
   );
   return true;
 }
