@@ -142,6 +142,14 @@ export function mayRunChatBundledMutation(): boolean {
   return (!poison && senders.length === 1) || system;
 }
 
+/** Is the active turn a PURE system/scheduled turn (no chat row at all)? Used by
+ *  the poll-loop's follow-up boundary to detect an actor-domain crossing the other
+ *  way — a chat follow-up arriving during a standup/system turn must end the stream
+ *  and run as its own turn rather than ride the system turn's unresolved actor. */
+export function isSystemTurn(): boolean {
+  return readStored().system;
+}
+
 /** Turn-boundary clear (poll-loop). */
 export function clearTurnActor(): void {
   deleteKey();

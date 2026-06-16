@@ -3,7 +3,14 @@ import os from 'os';
 import path from 'path';
 
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
-import { getPendingMessages, markProcessing, markCompleted, markFailed, type MessageInRow } from './db/messages-in.js';
+import {
+  getPendingMessages,
+  markProcessing,
+  markCompleted,
+  markFailed,
+  deferProcessing,
+  type MessageInRow,
+} from './db/messages-in.js';
 import { EXECUTE_APPROVED_ACTION, executeApprovedAction } from './mcp-tools/taskflow-approval.js';
 // Side-effect import: registers the approved-action executors IN THIS (main) process. The MCP tool
 // modules run in a separate subprocess, so their registrations don't reach the replay path here.
@@ -37,7 +44,7 @@ import {
   shouldSuppressSameConvMessage,
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
-import { addTurnActorSenders, clearTurnActor, setTurnActor } from './mcp-tools/turn-actor.js';
+import { addTurnActorSenders, clearTurnActor, getTurnActor, isSystemTurn, setTurnActor } from './mcp-tools/turn-actor.js';
 import {
   addTurnExternalActorEntries,
   clearTurnExternalActor,
@@ -1523,6 +1530,77 @@ export function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poi
   // an ambiguous chat turn — and a read-failure can never look like a system turn.
   const system = cmd.length > 0 && !anyChat;
   return { senders, poison, system };
+}
+
+/**
+ * Actor-domain isolation — defend an authenticated chat turn from a co-batched
+ * scheduled/system task POISONING its actor.
+ *
+ * turnActorSenders (above) deliberately poisons the per-turn actor when ANY
+ * non-chat trigger=1 row shares the batch (#419: non-chat content must not ride a
+ * co-batched chat actor). But that poison is BATCH-scoped: a daily [TF-STANDUP]
+ * that merely fires in the same poll iteration as a manager's chat message makes
+ * the manager's OWN legitimate mutation fail `requiresChatActor` — a V1→V2
+ * regression (V1 had no per-turn actor; it used each message's sender directly).
+ *
+ * The fix is SEPARATION, not weakening the poison: when the wake-eligible
+ * (trigger=1) command rows mix an AUTHENTICATED chat row (a real board sender,
+ * not external) with a non-chat system/scheduled task row, defer the task rows to
+ * a later poll iteration. The chat turn then binds its clean single-sender actor
+ * (V1 parity), and the deferred task runs ALONE next iteration as a pure-SYSTEM
+ * turn — turnActorSenders → {senders:[], poison:true, system:true} — so it has NO
+ * chat actor to borrow and can only run the standup-archive housekeeping
+ * (mayRunChatBundledMutation), never a board-person-authority mutation. The #419
+ * security property is preserved by the isolation.
+ *
+ * Returns the task-row ids to defer, or [] when the batch is NOT mixed (pure
+ * chat, pure system, or a chat with no authenticated sender — that last case is a
+ * separate poison concern this split intentionally leaves to turnActorSenders).
+ * Keyed on command (trigger=1) rows only; trigger=0 context rides with the chat.
+ */
+export function deferrableSystemRowIds(rows: MessageInRow[]): string[] {
+  const cmd = selectCommandRows(rows);
+  let hasAuthenticatedChat = false;
+  const systemRowIds: string[] = [];
+  for (const row of cmd) {
+    const isChat = row.kind === 'chat' || row.kind === 'chat-sdk';
+    if (isChat) {
+      // External chat rows never reach here (the external-actor branch handles
+      // and drains them first); guard anyway so the function stands alone.
+      if (parseJsonContent(row.content).actorKind === 'external') continue;
+      const parsed = parseSingleChat(row);
+      if (parsed && parsed.sender) hasAuthenticatedChat = true;
+    } else {
+      systemRowIds.push(row.id); // a non-chat (scheduled/system task) command row
+    }
+  }
+  return hasAuthenticatedChat && systemRowIds.length > 0 ? systemRowIds : [];
+}
+
+/**
+ * Follow-up companion to deferrableSystemRowIds: would pushing `newRows` into the
+ * currently-active stream CROSS its actor domain? The poll-loop ends the stream
+ * (rather than push) when it would, so a cross-domain follow-up runs as its own
+ * correctly-scoped turn instead of poisoning the active one. Two crossings:
+ *   (a) an active AUTHENTICATED chat turn + an incoming system/scheduled task, or
+ *   (b) an active pure-SYSTEM (standup) turn + an incoming authenticated chat.
+ * Same-domain follow-ups (chat→chat, system→system) and an already-poisoned
+ * multi-sender chat turn (neither resolved nor system) return false → push as before.
+ */
+export function followupCrossesActorDomain(
+  newRows: MessageInRow[],
+  activeChatResolved: boolean,
+  activeSystem: boolean,
+): boolean {
+  const cmd = selectCommandRows(newRows);
+  const hasChatCmd = cmd.some(
+    (m) =>
+      (m.kind === 'chat' || m.kind === 'chat-sdk') &&
+      parseJsonContent(m.content).actorKind !== 'external' &&
+      !!parseSingleChat(m)?.sender,
+  );
+  const hasSystemCmd = cmd.some((m) => m.kind !== 'chat' && m.kind !== 'chat-sdk');
+  return (activeChatResolved && hasSystemCmd) || (activeSystem && hasChatCmd);
 }
 
 /**
@@ -4418,7 +4496,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const ids = messages.map((m) => m.id);
     markProcessing(ids);
 
-    const routing = extractRouting(messages);
+    // `let` (not const): the actor-domain split below may drop a co-batched
+    // scheduled-task row that sorts FIRST (lower seq) — and a TaskFlow runner row
+    // can carry null routing — so routing is re-derived from the post-split `keep`
+    // (a real chat row) before any reply is written. See the split hook below.
+    let routing = extractRouting(messages);
 
     // 0h-v2 (memo §0.3 step 4): set web-origin HERE — after routing is
     // known, before ANY batch `writeMessageOut` (command-gate replies
@@ -4656,6 +4738,59 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (keep.length === 0) {
       log(`All ${normalMessages.length} non-command message(s) gated by script, skipping query`);
       continue;
+    }
+
+    // Actor-domain isolation: when this wake batch mixes an authenticated chat row
+    // with a scheduled/system task row, defer the task rows to a later poll
+    // iteration so the chat turn binds its OWN clean single-sender actor (V1 parity)
+    // instead of being poisoned by the co-batched task (turnActorSenders poisons on
+    // any non-chat trigger=1 row → requiresChatActor would deny the chat's own
+    // legitimate mutation). The deferred task runs alone in a later iteration as a
+    // pure-system turn (no chat actor to borrow — the #419 property is preserved by
+    // the separation). deferProcessing un-marks the task (it was markProcessing'd at
+    // batch start) so it is PENDING again: the concurrent follow-up poll inside
+    // processQuery sees it and ENDS the chat stream on the actor-domain crossing — it
+    // never PUSHES it (see the boundary check in processQuery), so the active chat
+    // turn is never re-poisoned and the OUTER loop then runs the task as its own turn.
+    // Excluded from this turn's markCompleted via `deferredSet`. Only fires for a
+    // genuinely mixed batch — pure chat / pure system batches are untouched.
+    //
+    // Bounded-delay note: under a genuinely continuous chat (a new chat every poll),
+    // the task is deferred each turn and only runs once an outer iteration sees it
+    // WITHOUT a co-batched chat. It is never lost (stays pending) and runs at the
+    // first conversational gap — and holding a standup until the conversation pauses
+    // is benign (arguably better than bursting it mid-thread). No hard livelock.
+    const deferredSet = new Set(deferrableSystemRowIds(keep));
+    if (deferredSet.size > 0) {
+      deferProcessing([...deferredSet]);
+      keep = keep.filter((m) => !deferredSet.has(m.id));
+      // Re-derive routing from the chat-only remainder: a deferred task row may
+      // have sorted first in the batch, so the reply must route off a real chat row
+      // (correct platform AND in_reply_to), not the dropped task.
+      routing = extractRouting(keep);
+      // Web-origin ctx was captured above from the pre-split batch's routing; re-derive
+      // it from `keep` so a dropped null-routed task can't leave the web-reply rewrite
+      // (messages-out.ts) keyed to the wrong platform. Web rows (`taskflow-web:`) are
+      // chat rows and are never deferred, so the board / cross-board detection is
+      // identical — only the routing fields shift (crossBoardSkipped>0 already drained
+      // and `continue`d the whole batch above, so it can never recur here).
+      const reWo = detectWebOrigin(keep, routing);
+      setCurrentWebOrigin(
+        reWo
+          ? {
+              board_id: reWo.board_id,
+              board_chat_ids: reWo.board_chat_ids,
+              platformId: reWo.platformId,
+              channelType: reWo.channelType,
+              threadId: reWo.threadId,
+              sender_name: config.assistantName,
+              source_id_prefix: config.agentGroupId,
+            }
+          : null,
+      );
+      log(
+        `Actor-domain split: deferred ${deferredSet.size} system/task row(s) so the chat turn binds a clean actor`,
+      );
     }
 
     // #413: deterministic TaskFlow command parsers must read commands ONLY from wake-eligible
@@ -4998,7 +5133,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     // Process the query while concurrently polling for new messages
     const skippedSet = new Set(skipped);
-    const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
+    // Exclude actor-domain-deferred task rows: they were un-marked (deferProcessing)
+    // to re-run alone next iteration, so they must NOT be markCompleted at this
+    // turn's boundary or they'd never fire.
+    const processingIds = ids.filter(
+      (id) => !commandIds.includes(id) && !skippedSet.has(id) && !deferredSet.has(id),
+    );
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
@@ -5302,6 +5442,27 @@ async function processQuery(
         if (newMessages.length === 0) return;
         if (!hasWakeTrigger(newMessages)) return;
 
+        // Actor-domain boundary: a follow-up that would CROSS the active turn's actor
+        // domain must NOT merge into this stream — pushing it would poison the actor
+        // (addTurnActorSenders ORs poison, sticky) and deny the in-flight mutation.
+        // Same remedy as a pending slash command / the web boundary above: END the
+        // stream and leave the rows PENDING (no markProcessing yet) so the OUTER loop
+        // runs them as their own, correctly actor-scoped turn. Two crossings:
+        //   (a) active AUTHENTICATED chat turn + a co-pending system/scheduled task, or
+        //   (b) active pure-SYSTEM (standup) turn + a co-pending authenticated chat.
+        // Same-domain follow-ups (chat→chat, system→system) and an already-poisoned
+        // multi-sender chat turn fall through and push as before. gateScheduledRunners
+        // already ran above, so a board-suppressed standup never trips this. This is
+        // also how the INITIAL-batch split's deferred task gets out: it un-marked the
+        // task to pending, the first poll here sees it and ends the stream rather than
+        // re-poisoning the just-cleaned chat actor.
+        if (followupCrossesActorDomain(newMessages, getTurnActor().resolved, isSystemTurn())) {
+          log('Actor-domain boundary — ending stream so the cross-domain follow-up runs as its own turn');
+          endedForCommand = true;
+          query.end();
+          return;
+        }
+
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);
 
@@ -5348,6 +5509,15 @@ async function processQuery(
           return;
         }
 
+        // NOTE (actor-domain split scope): the deferrableSystemRowIds split lives on
+        // the INITIAL-batch path only (the proven co-batch regression: a due task and
+        // a chat picked up together at turn start). It is intentionally NOT mirrored
+        // here — gateScheduledRunners already ran above (5377) and suppresses due
+        // [TF-*] runners on an active board, which is exactly when a stream is open.
+        // A non-runner task firing mid-stream still rides this accumulate (pre-existing
+        // #419 behavior, not a new regression); a symmetric per-message actor is a
+        // larger follow-up, deliberately out of scope for this surgical fix.
+        //
         // #419: ACCUMULATE this follow-up push's senders into the active stream's
         // actor BEFORE pushing it (markCompleted fires at the first result while the
         // stream stays open, so a processing_ack-keyed binding would be fail-open

@@ -1461,8 +1461,14 @@ Crio assim?`,
     await loopPromise.catch(() => {});
   });
 
-  it('handles mixed task + chat batch with correct origin metadata', async () => {
-    // Seed destination for routing lookup
+  it('splits a mixed task + chat batch into separate turns, each with correct origin metadata', async () => {
+    // A chat (Alice) and a scheduled task land in the SAME poll batch. Actor-domain
+    // isolation processes them as SEPARATE turns: the chat turn binds Alice's clean
+    // single-sender actor, and the task is DEFERRED to run alone next iteration — so
+    // the chat's mutation can never be poisoned by the co-batched task (the #419
+    // co-batch regression that denied legitimate chat mutations in production).
+    // The old (buggy) co-batch path produced ONE combined turn → ONE output; the
+    // split produces TWO outputs (chat turn + deferred-task turn), both origin chan-1.
     insertMessage('m-chat', { sender: 'Alice', text: 'check this' }, { platformId: 'chan-1', channelType: 'discord' });
     // Task with same routing — simulates a scheduled task in a channel session
     getInboundDb()
@@ -1474,14 +1480,15 @@ Crio assim?`,
 
     const provider = new MockProvider({}, () => '<message to="discord-test">done</message>');
     const controller = new AbortController();
-    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 3000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    // Two separate turns → two outputs (chat first, deferred task next iteration).
+    await waitFor(() => getUndeliveredMessages().length >= 2, 3000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    expect(out[0].platform_id).toBe('chan-1');
+    expect(out).toHaveLength(2);
+    expect(out.every((m) => m.platform_id === 'chan-1')).toBe(true);
 
     await loopPromise.catch(() => {});
   });
