@@ -19,6 +19,15 @@ const fakeSession: Session = {
   created_at: '2026-05-04T00:00:00Z',
 };
 
+// The synthetic FastAPI service session: only this identity drains the service
+// outbound, so handleServiceSendOtp fail-closes against any other session.
+const serviceSession: Session = {
+  ...fakeSession,
+  id: 'taskflow-service',
+  agent_group_id: 'taskflow-service',
+  messaging_group_id: 'taskflow-service',
+};
+
 let mockWhatsAppAdapter: Partial<ChannelAdapter> | undefined;
 let gateAllow: boolean;
 
@@ -125,12 +134,59 @@ describe('handleSendOtp', () => {
   });
 });
 
+describe('handleServiceSendOtp', () => {
+  it('delivers from the service session even when the main-control gate would DENY (trusted, ungated)', async () => {
+    // The whole point of the FastAPI/dashboard path: the service subprocess is
+    // trusted, so the main-control gate must NOT apply. Force the gate to deny
+    // and assert delivery still happens — this is the trust-boundary contract.
+    gateAllow = false;
+    const { handleServiceSendOtp } = await import('./handler.js');
+    await handleServiceSendOtp(
+      { action: 'service_send_otp', phone: '+5585999991234', message: 'Codigo: 123456' },
+      serviceSession,
+      {} as never,
+    );
+    expect(mockWhatsAppAdapter!.lookupPhoneJid).toHaveBeenCalledWith('+5585999991234');
+    expect(mockWhatsAppAdapter!.deliver).toHaveBeenCalledOnce();
+    const payload = (mockWhatsAppAdapter!.deliver as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(payload.kind).toBe('chat');
+    expect((payload.content as { text?: string }).text).toBe('Codigo: 123456');
+  });
+
+  it('DROPS a service_send_otp row drained from a non-service session (fail-closed, anti-spoof)', async () => {
+    // Defense-in-depth (Codex BLOCKER): the host dispatches system rows by
+    // content.action alone. If a forged service_send_otp row ever appeared in a
+    // normal chat session's outbound, the draining session would be that chat
+    // session — NOT taskflow-service — and must be dropped before delivery.
+    const { handleServiceSendOtp } = await import('./handler.js');
+    await handleServiceSendOtp(
+      { action: 'service_send_otp', phone: '+5585999991234', message: 'Codigo: 123456' },
+      fakeSession,
+      {} as never,
+    );
+    expect(mockWhatsAppAdapter!.lookupPhoneJid).not.toHaveBeenCalled();
+    expect(mockWhatsAppAdapter!.deliver).not.toHaveBeenCalled();
+  });
+
+  it('still drops invalid payloads (empty phone) — trust does not skip validation', async () => {
+    const { handleServiceSendOtp } = await import('./handler.js');
+    await handleServiceSendOtp(
+      { action: 'service_send_otp', phone: '  ', message: 'Codigo: 123456' },
+      serviceSession,
+      {} as never,
+    );
+    expect(mockWhatsAppAdapter!.lookupPhoneJid).not.toHaveBeenCalled();
+    expect(mockWhatsAppAdapter!.deliver).not.toHaveBeenCalled();
+  });
+});
+
 describe('send-otp module index', () => {
-  it('registers handleSendOtp as the "send_otp" delivery action on import', async () => {
+  it('registers both the gated "send_otp" and the trusted "service_send_otp" delivery actions on import', async () => {
     const registerSpy = vi.fn();
     vi.doMock('../../delivery.js', () => ({ registerDeliveryAction: registerSpy }));
     await import('./index.js');
     expect(registerSpy).toHaveBeenCalledWith('send_otp', expect.any(Function));
+    expect(registerSpy).toHaveBeenCalledWith('service_send_otp', expect.any(Function));
     vi.doUnmock('../../delivery.js');
   });
 });

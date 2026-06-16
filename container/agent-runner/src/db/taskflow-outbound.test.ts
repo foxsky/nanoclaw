@@ -194,3 +194,41 @@ describe('enqueueWebChatInbound', () => {
     expect(rows()).toHaveLength(1);
   });
 });
+
+/**
+ * `enqueueServiceSendOtp` — web-login OTP push from the FastAPI/dashboard
+ * subprocess (Option A, 2026-06-16). Writes the DISTINCT `service_send_otp`
+ * action so the host handler skips the main-control gate ONLY for this
+ * service-originated source. The action name is the whole security boundary:
+ * if it ever drifts to `send_otp`, the host gate would re-apply and prod login
+ * would silently break again — so the test pins the exact action string.
+ */
+describe('enqueueServiceSendOtp', () => {
+  it('writes a system row carrying the service_send_otp payload; routing cols NULL', async () => {
+    const { enqueueServiceSendOtp } = await import('./taskflow-outbound.ts');
+    const seq = enqueueServiceSendOtp(dbPath, 'otp-1', '+5585999991234', 'Codigo: 123456');
+    expect(typeof seq).toBe('number');
+    expect(seq).toBeGreaterThan(0);
+    const all = rows();
+    expect(all).toHaveLength(1);
+    const row = all[0];
+    expect(row.id).toBe('otp-1');
+    expect(row.kind).toBe('system');
+    expect(row.platform_id).toBeNull();
+    expect(row.channel_type).toBeNull();
+    expect(row.thread_id).toBeNull();
+    const content = JSON.parse(row.content as string);
+    expect(content).toEqual({
+      action: 'service_send_otp',
+      phone: '+5585999991234',
+      message: 'Codigo: 123456',
+    });
+  });
+
+  it('is idempotent on id (retry does not duplicate)', async () => {
+    const { enqueueServiceSendOtp } = await import('./taskflow-outbound.ts');
+    enqueueServiceSendOtp(dbPath, 'otp-dup', '+5585999991234', 'Codigo: 1');
+    enqueueServiceSendOtp(dbPath, 'otp-dup', '+5585999991234', 'Codigo: 1');
+    expect(rows()).toHaveLength(1);
+  });
+});

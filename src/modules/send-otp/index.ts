@@ -6,6 +6,9 @@
  * system row; this module's handler validates + delivers.
  */
 import { registerDeliveryAction } from '../../delivery.js';
-import { handleSendOtp } from './handler.js';
+import { handleSendOtp, handleServiceSendOtp } from './handler.js';
 
 registerDeliveryAction('send_otp', handleSendOtp);
+// Web-login OTP (Option A, 2026-06-16): the FastAPI service session's TRUSTED,
+// ungated path. Distinct action so only the FastAPI subprocess can reach it.
+registerDeliveryAction('service_send_otp', handleServiceSendOtp);

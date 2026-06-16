@@ -23,10 +23,12 @@ describe('MCP contract artifact (L4 tf-mcontrol seam)', () => {
     expect(built).toEqual(committed);
   });
 
-  it('exposes exactly the 36-tool FastAPI surface tf-mcontrol baselined', () => {
-    expect(built.tools).toHaveLength(36);
+  it('exposes exactly the 37-tool FastAPI surface tf-mcontrol baselined', () => {
+    expect(built.tools).toHaveLength(37);
     expect(built.serverInfo).toEqual({ name: 'nanoclaw', version: '2.0.0' });
     expect(built.protocolVersion).toBe('2024-11-05');
+    // send_otp added 2026-06-16 (Option A web-login OTP) — deliberately exposed.
+    expect(built.tools.some((t) => t.name === 'send_otp')).toBe(true);
   });
 
   it('tools are sorted by name (stable diffs)', () => {

@@ -1062,6 +1062,27 @@
           "updates"
         ]
       }
+    },
+    {
+      "name": "send_otp",
+      "description": "Send a transactional WhatsApp message (OTP, invitation, code) to a specific phone number. From the dashboard/FastAPI engine this is service-trusted and delivered directly (web-login OTP); from an in-container agent it is only honored for the operator-designated main-control chat and otherwise silently dropped on the host. Fire-and-forget: the ack returns when the call is submitted, not when the message is delivered. The host validates the phone is on WhatsApp and delivers; failures (phone-not-on-WhatsApp, untrusted caller) are dropped without notifying you.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "Phone in international format (with or without \"+\" / dashes / spaces). Brazilian numbers without country code get \"55\" prepended automatically by the WhatsApp adapter."
+          },
+          "message": {
+            "type": "string",
+            "description": "Plain-text message body. Will be delivered as a WhatsApp text message to the resolved JID."
+          }
+        },
+        "required": [
+          "phone",
+          "message"
+        ]
+      }
     }
   ]
 }

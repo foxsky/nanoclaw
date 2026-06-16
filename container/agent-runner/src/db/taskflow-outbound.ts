@@ -91,6 +91,29 @@ export function enqueueOutboundMessage(
   });
 }
 
+/**
+ * Web-login OTP push from the FastAPI/dashboard subprocess (Option A,
+ * 2026-06-16 — prod login was broken since cutover). Writes the TRUSTED
+ * `service_send_otp` system row to the service outbound. DISTINCT action
+ * (not `send_otp`) so the host handler skips the main-control gate ONLY for
+ * this service-originated source; the in-container agent's `send_otp` keeps
+ * the gate. Only the FastAPI subprocess can produce this row — the caller
+ * gates emission on getVerbatimIds() (process-level, unspoofable by MCP
+ * input) — so a chat agent can never reach the ungated path.
+ */
+export function enqueueServiceSendOtp(
+  serviceOutboundDbPath: string,
+  id: string,
+  phone: string,
+  message: string,
+): number {
+  return enqueueServiceSystemRow(serviceOutboundDbPath, id, {
+    action: 'service_send_otp',
+    phone,
+    message,
+  });
+}
+
 export interface EnqueueWebChatInboundParams {
   /** Stable id, e.g. `taskflow-web:${board_chat_id}` — idempotent. */
   id: string;

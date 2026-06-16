@@ -23,6 +23,9 @@ import './taskflow-api-chat.js';
 // R5: serialized board-scoped READ tools — FastAPI-only (NOT in the chat barrel
 // index.ts), allowlisted below so the dashboard routes reads through the engine.
 import './taskflow-api-serialized-read.js';
+// Web-login OTP (Option A, 2026-06-16): register send_otp in the FastAPI context
+// so it's exposed to the dashboard's MCP engine (it's allowlisted below).
+import './send-otp.js';
 
 /**
  * The exact tool surface the tf-mcontrol FastAPI MCP client may use.
@@ -111,4 +114,11 @@ export const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_list_comments',
   'api_runner_status',
   'api_runner_status_batch', // all-boards variant (tf-mcontrol 2026-06-11) — replaces the per-board fan-out
+  // web-login OTP delivery (Option A, INBOUND tf-mcontrol 2026-06-16): prod
+  // dashboard login was broken since V2 cutover (the V1 IPC OTP path is gone).
+  // The dashboard calls send_otp; in the FastAPI subprocess (getVerbatimIds())
+  // it emits the TRUSTED `service_send_otp` system row to the service outbound,
+  // which the host delivers WITHOUT the main-control gate. Returns the
+  // {success,...} envelope. Non-board system tool (no board_id).
+  'send_otp',
 ]);

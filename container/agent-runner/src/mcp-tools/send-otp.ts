@@ -17,8 +17,10 @@
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
+import { enqueueServiceSendOtp } from '../db/taskflow-outbound.js';
+import { getServiceOutboundDbPath, getVerbatimIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
-import { err, generateId, log, nonEmptyString, ok } from './util.js';
+import { err, generateId, jsonResponse, log, nonEmptyString, ok } from './util.js';
 
 
 
@@ -26,7 +28,7 @@ export const sendOtpTool: McpToolDefinition = {
   tool: {
     name: 'send_otp',
     description:
-      'Send a transactional WhatsApp message (OTP, invitation, code) to a specific phone number. Only callable from the operator-designated main control chat — calls from elsewhere are silently dropped on the host. Fire-and-forget: the tool ack returns when your call is submitted, not when the message is delivered. The host validates the phone is on WhatsApp and delivers; failures (phone-not-on-WhatsApp, non-main caller) are dropped without notifying you.',
+      'Send a transactional WhatsApp message (OTP, invitation, code) to a specific phone number. From the dashboard/FastAPI engine this is service-trusted and delivered directly (web-login OTP); from an in-container agent it is only honored for the operator-designated main-control chat and otherwise silently dropped on the host. Fire-and-forget: the ack returns when the call is submitted, not when the message is delivered. The host validates the phone is on WhatsApp and delivers; failures (phone-not-on-WhatsApp, untrusted caller) are dropped without notifying you.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -50,6 +52,28 @@ export const sendOtpTool: McpToolDefinition = {
     if (!message) return err('message is required and must be a non-empty string');
 
     const requestId = generateId();
+
+    // FastAPI/dashboard subprocess (web-login OTP, Option A) — getVerbatimIds()
+    // is the process-level, unspoofable "am I the service subprocess" signal.
+    // Emit the TRUSTED `service_send_otp` system row to the SERVICE outbound (the
+    // dashboard's --service-outbound-db) and return the FastAPI {success,...}
+    // envelope (the dashboard's client.call parses tool output as JSON — a bare
+    // string ack would choke it). Fire-and-forget, V1 semantics.
+    if (getVerbatimIds()) {
+      const svc = getServiceOutboundDbPath();
+      if (!svc) {
+        return jsonResponse({
+          success: false,
+          error_code: 'service_unavailable',
+          error: 'service-outbound-db not configured; OTP not enqueued',
+        });
+      }
+      enqueueServiceSendOtp(svc, requestId, phone, message);
+      log(`send_otp (service): ${requestId} → ${phone} (msg ${message.length}ch)`);
+      return jsonResponse({ success: true });
+    }
+
+    // In-container agent path (unchanged): main-control-gated `send_otp`.
     writeMessageOut({
       id: requestId,
       kind: 'system',
