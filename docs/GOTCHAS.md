@@ -4,7 +4,7 @@ Each entry is a fixed shape so it's scannable: **Rule / Why / How it bites /
 Verify / Guardrail / Last incident.** This is the L1 spine of the agent second
 brain. The router that points agents here at the right moment is the **"Agent
 trigger map (second brain)"** section of the root `CLAUDE.md`; the full playbook
-is `tf-mcontrol/docs/SECOND-BRAIN.md` (sibling repo).
+is `../tf-mcontrol/docs/SECOND-BRAIN.md` (sibling repo at `/root/tf-mcontrol`).
 
 **The ritual:** every silent bug earns a guardrail. Before closing one, ask *"what
 is the cheapest executable check that would have caught this?"* and add it in the
@@ -20,8 +20,11 @@ never `row === undefined`.
 `undefined`. The two trees look identical but differ here.
 **How it bites.** A `row === undefined` check silently treats "not found" as
 truthy (or a real null row as absent) — wrong branch, no crash.
-**Verify.** `grep -rn "\.get(" container/agent-runner/src | grep "=== undefined"` → should be empty.
-**Guardrail.** None executable yet (candidate lint).
+**Verify.** `cd container/agent-runner && bun test src/db/bun-sqlite-behavior.test.ts`.
+**Guardrail.** `container/agent-runner/src/db/bun-sqlite-behavior.test.ts` (L0 — pins the
+runtime fact; fails if Bun ever changes it). NB: a `.get() === undefined` *usage*
+lint is intentionally NOT used — it's too noisy (JS `Map.get`/`Array` legitimately
+return `undefined`, so it cries wolf). Treat a missing row as `null`.
 **Last incident.** Pre-2026-06; see memory `feedback_get_returns_null_in_bun_sqlite`.
 
 ## Prettier corrupts skill/markdown; the hook only formats `src/**/*.ts`
@@ -45,9 +48,12 @@ and gates nothing.
 turn by `disallowedTools`, not by the allowlist.
 **How it bites.** A "restricted" tool list that restricts nothing — e.g. a confined
 external turn could still call `Read`/`Bash` over board-private files.
-**Verify.** `container/agent-runner/src/providers/confined-external.test.ts`,
-`providers/security-denylist.test.ts`.
-**Guardrail.** Those tests (L0) + `computeAllowedTools` is a pure, tested fn.
+**Verify.** `providers/security-denylist.test.ts` + `providers/security-boundary.test.ts`
+(the availability boundary — what `disallowedTools` actually blocks).
+**Guardrail.** `security-denylist.test.ts` + `security-boundary.test.ts` are the L0
+availability boundary. `confined-external.test.ts` + `computeAllowedTools` are
+**defense-in-depth** (the confined allowlist *shape*), NOT the boundary — don't
+mistake them for it.
 **Last incident.** 2026-06-15, RC5-ext C4c Codex round 2.
 
 ## The MockProvider stream stays open — a one-shot turn's `finally` never runs in tests

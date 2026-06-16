@@ -13,16 +13,23 @@ lands.
 Build the entire flow with the activation switch **OFF** until every container
 guard exists, then flip it in one reviewed change.
 
-- The host resolver (`resolveUnroutedExternalDm`) is written + unit-tested but
-  **NOT registered** (`setUnroutedDmResolver` is not called) — so no external row
-  is ever written into a board session.
-- The poll-loop keeps a **fail-closed gate** for any external-actor row until the
-  confined execution path is complete.
-- Registration happens only after the actor guard (C4b), confined execution +
-  provider (C4c), formatter (C6), and an e2e (P4) all land and are Codex-clean.
+**During the DARK build phase (C4b `0de97550` → P4 `9f3f6e71`):**
+- The host resolver (`resolveUnroutedExternalDm`) was written + unit-tested but
+  **not registered** (`setUnroutedDmResolver` was not called) — so no external row
+  could be written into a board session.
+- The poll-loop kept a **fail-closed gate** for any external-actor row until the
+  confined execution path was complete.
 
-Enforced by: the unregistered resolver + the poll-loop's fail-closed branch; each
-unit's commit is inert in production by construction.
+**At go-live (`156ac4dc` — registration happened ONLY after C4b/C4c/C6/P4 all
+landed Codex-clean):** `src/modules/taskflow/index.ts` now calls
+`setUnroutedDmResolver(resolveUnroutedExternalDm)`. Current enforcement is the
+registered host resolver (grant-gated, fail-closed) + the confined poll-loop path
+(C4b/C4c) + the engine per-meeting grant re-check.
+
+**The flow is registered in code but NOT deployed** — production is still inert
+until a deliberate deploy (see GOTCHAS → "never deploy v2 to `.63` pre-cutover").
+The *pattern* this ADR records — ship dark, register only when fully guarded — is
+what generalizes; the dark↔live state above is point-in-time.
 
 ## Consequences
 - **+** Every unit lands safe (DARK) and is reviewable in isolation; no
