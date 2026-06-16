@@ -506,10 +506,12 @@ registerChannelAdapter('whatsapp', {
 
       sock.ev.on('creds.update', saveCreds);
 
-      // Phone number sharing events — update LID mapping
-      sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
-        const lidUser = lid?.split('@')[0].split(':')[0];
-        if (lidUser && jid) setLidPhoneMapping(lidUser, jid);
+      // LID→phone mapping updates. baileys 7.x renamed `chats.phoneNumberShare` ({lid,jid}) to
+      // `lid-mapping.update` ({lid,pn}); pn is the phone-number JID. Warm the same cache translateJid
+      // uses, normalizing pn to <number>@s.whatsapp.net (mirrors translateJid).
+      sock.ev.on('lid-mapping.update', ({ lid, pn }) => {
+        const lidUser = lid.split('@')[0].split(':')[0];
+        if (lidUser && pn) setLidPhoneMapping(lidUser, `${pn.split('@')[0].split(':')[0]}@s.whatsapp.net`);
       });
 
       // Inbound messages
