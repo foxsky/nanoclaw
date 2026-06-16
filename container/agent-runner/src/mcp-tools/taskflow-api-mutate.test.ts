@@ -2163,6 +2163,28 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.data).toBeDefined();
   });
 
+  it('query=task_details renders the V1 detail card: separator, column emoji, Prazo + (atrasada), *Notas:* block', async () => {
+    const { apiCreateSimpleTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Site Eturb', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    // overdue due date + a note in tasks.notes (→ *Notas:* block)
+    db.prepare(`UPDATE tasks SET due_date = '2026-01-05', notes = ? WHERE id = ? AND board_id = ?`).run(
+      JSON.stringify([{ id: 1, text: 'Processo enviado à SEMGOV', at: '2026-04-27T18:00:00.000Z', by: 'alice' }]),
+      taskId,
+      BOARD,
+    );
+
+    const response = await apiQueryTool.handler({ board_id: BOARD, query: 'task_details', task_id: taskId });
+    const d = JSON.parse(response.content[0].text).data.formatted_task_details as string;
+    expect(d).toContain('━━━━━━━━━━━━━━'); // separator after header
+    expect(d).toContain('📥 *Coluna:* Inbox'); // PER-COLUMN emoji (inbox → 📥, not hardcoded ⏭️)
+    expect(d).toMatch(/⏰ \*Prazo:\* 05\/01\/2026 _\(atrasada\)_/); // DD/MM/YYYY + overdue suffix
+    expect(d).toContain('*Notas:*');
+    expect(d).toContain('• #1 (27/04): Processo enviado à SEMGOV'); // note date in board TZ (UTC-3)
+  });
+
   it('query=search uses token fallback for non-contiguous Portuguese phrases', async () => {
     const { apiCreateTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
     await apiCreateTaskTool.handler({

@@ -2355,14 +2355,52 @@ export class TaskflowEngine {
         default: return column ?? 'Sem coluna';
       }
     };
+    const colEmoji = (column: string | null | undefined): string =>
+      ({ inbox: '📥', next_action: '⏭️', in_progress: '🔄', waiting: '⏳', review: '🔍', done: '✅' })[
+        column ?? ''
+      ] ?? '⏭️';
     const icon = task.type === 'project' ? '📁' : task.type === 'meeting' ? '📅' : task.type === 'recurring' ? '🔄' : '📋';
-    const lines: string[] = [`${icon} *${taskIdForDisplay()}* — ${task.title}`];
+    // V1 detail card: header, separator, blank, then Responsável / Coluna(emoji) / Prazo.
+    const lines: string[] = [`${icon} *${taskIdForDisplay()}* — ${task.title}`, TaskflowEngine.SEP, ''];
     const assignee = nameOf(task.assignee);
     if (assignee) lines.push(`👤 *Responsável:* ${assignee}`);
-    lines.push(`⏭️ *Coluna:* ${colLabel(task.column)}`);
-    if (task.due_date) lines.push(`⏰ *Prazo:* ${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}`);
+    lines.push(`${colEmoji(task.column)} *Coluna:* ${colLabel(task.column)}`);
+    // Prazo is ALWAYS shown in the detail view (DD/MM/YYYY + _(atrasada)_ when overdue; "sem prazo" if unset).
+    const overdue = typeof task.due_date === 'string' && task.due_date < this.boardToday();
+    lines.push(
+      `⏰ *Prazo:* ${
+        task.due_date
+          ? `${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}/${task.due_date.slice(0, 4)}${overdue ? ' _(atrasada)_' : ''}`
+          : 'sem prazo'
+      }`,
+    );
     if (task.scheduled_at) lines.push(`📆 *Agendada:* ${task.scheduled_at}`);
     if (task.parent_title) lines.push(`📁 *Projeto:* ${task.parent_task_id} — ${task.parent_title}`);
+
+    // *Notas:* block — the task's NOTE LIST (tasks.notes JSON array, written by
+    // addNoteCore: {id, text, at, by, …}), NOT the api-comment stream. #N = note.id;
+    // date = note.at as DD/MM in board TZ (Fortaleza UTC-3, like formatFortalezaMeetingWhen).
+    let notes: Array<{ id?: unknown; text?: unknown; at?: unknown }> = [];
+    try {
+      const parsed = JSON.parse((task.notes as string) ?? '[]');
+      if (Array.isArray(parsed)) notes = parsed;
+    } catch {
+      notes = [];
+    }
+    if (notes.length > 0) {
+      lines.push('', '*Notas:*');
+      for (const n of notes) {
+        const num = typeof n.id === 'number' ? n.id : '?';
+        let datePart = '';
+        if (typeof n.at === 'string') {
+          const d = new Date(new Date(n.at).getTime() - 3 * 60 * 60 * 1000);
+          if (!Number.isNaN(d.getTime())) {
+            datePart = ` (${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')})`;
+          }
+        }
+        lines.push(`• #${num}${datePart}: ${typeof n.text === 'string' ? n.text : ''}`);
+      }
+    }
 
     if (task.type === 'project' && subtaskRows.length > 0) {
       const active = subtaskRows.filter((row) => row.column !== 'done');
