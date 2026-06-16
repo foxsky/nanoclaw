@@ -208,6 +208,8 @@ registerChannelAdapter('whatsapp', {
     // Group sync tracking
     let lastGroupSync = 0;
     let groupSyncTimerStarted = false;
+    let groupSyncInterval: NodeJS.Timeout | undefined;
+    let shuttingDown = false;
 
     // First-connect promise
     let resolveFirstOpen: (() => void) | undefined;
@@ -384,7 +386,9 @@ registerChannelAdapter('whatsapp', {
       });
 
       sock = makeWASocket({
-        version,
+        // Only pass version when the fetch succeeded — passing `version: undefined` would override
+        // baileys' built-in default rather than fall back to it.
+        ...(version ? { version } : {}),
         auth: {
           creds: state.creds,
           keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
@@ -435,7 +439,7 @@ registerChannelAdapter('whatsapp', {
         if (connection === 'close') {
           connected = false;
           const reason = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
-          const shouldReconnect = reason !== DisconnectReason.loggedOut;
+          const shouldReconnect = !shuttingDown && reason !== DisconnectReason.loggedOut;
 
           log.info('WhatsApp connection closed', { reason, shouldReconnect });
 
@@ -490,7 +494,7 @@ registerChannelAdapter('whatsapp', {
           syncGroupMetadata().catch((err) => log.error('Initial group sync failed', { err }));
           if (!groupSyncTimerStarted) {
             groupSyncTimerStarted = true;
-            setInterval(() => {
+            groupSyncInterval = setInterval(() => {
               syncGroupMetadata().catch((err) => log.error('Periodic group sync failed', { err }));
             }, GROUP_SYNC_INTERVAL_MS);
           }
@@ -511,7 +515,10 @@ registerChannelAdapter('whatsapp', {
       // uses, normalizing pn to <number>@s.whatsapp.net (mirrors translateJid).
       sock.ev.on('lid-mapping.update', ({ lid, pn }) => {
         const lidUser = lid.split('@')[0].split(':')[0];
-        if (lidUser && pn) setLidPhoneMapping(lidUser, `${pn.split('@')[0].split(':')[0]}@s.whatsapp.net`);
+        // pn is the phone-number JID; validate it's actually digits (not @lid / malformed) before
+        // synthesizing a phone jid, else we'd cache a wrong mapping.
+        const pnUser = pn && !pn.endsWith('@lid') ? pn.split('@')[0].split(':')[0] : '';
+        if (lidUser && /^\d+$/.test(pnUser)) setLidPhoneMapping(lidUser, `${pnUser}@s.whatsapp.net`);
       });
 
       // Inbound messages
@@ -524,15 +531,14 @@ registerChannelAdapter('whatsapp', {
             const rawJid = msg.key.remoteJid;
             if (!rawJid || rawJid === 'status@broadcast') continue;
 
-            // Translate LID → phone JID
+            // Translate LID → phone JID. baileys 7.x carries the phone-JID alternative of a LID chat
+            // in key.remoteJidAlt (6.x's key.senderPn no longer exists — that branch was dead on 7.x).
+            // Only trust it when it's an actual @s.whatsapp.net jid so we don't cache a bad mapping.
             let chatJid = await translateJid(rawJid);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            if (chatJid.endsWith('@lid') && (msg.key as any).senderPn) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const pn = (msg.key as any).senderPn as string;
-              const phoneJid = pn.includes('@') ? pn : `${pn}@s.whatsapp.net`;
-              setLidPhoneMapping(rawJid.split('@')[0].split(':')[0], phoneJid);
-              chatJid = phoneJid;
+            const altJid = (msg.key as { remoteJidAlt?: string }).remoteJidAlt;
+            if (chatJid.endsWith('@lid') && altJid && altJid.endsWith('@s.whatsapp.net')) {
+              setLidPhoneMapping(rawJid.split('@')[0].split(':')[0], altJid);
+              chatJid = altJid;
             }
 
             const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
@@ -727,7 +733,12 @@ registerChannelAdapter('whatsapp', {
       },
 
       async teardown() {
+        // Set BEFORE end() so the connection.update close handler doesn't treat the deliberate
+        // shutdown (reason=undefined) as reconnectable and respawn the socket. Also stop the
+        // periodic group-sync timer so it doesn't keep the process alive.
+        shuttingDown = true;
         connected = false;
+        if (groupSyncInterval) clearInterval(groupSyncInterval);
         sock?.end(undefined);
         log.info('WhatsApp adapter shut down');
       },
