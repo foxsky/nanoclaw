@@ -23,6 +23,27 @@ The host is a single Node process that orchestrates per-session agent containers
 
 **Everything is a message.** There is no IPC, no file watcher, no stdin piping between host and container. The two session DBs are the sole IO surface.
 
+## Agent trigger map (second brain)
+
+A *trigger map* — just before you touch X, read the one page that stops the
+silent bug. Knowledge lives in `docs/GOTCHAS.md` (footguns, fixed shape) and
+`docs/decisions/` (append-only ADRs); this only points at the right page.
+
+- **Before editing `container/agent-runner/` DB code** → `docs/GOTCHAS.md` → *bun:sqlite `.get()` returns null*.
+- **Before restricting an agent's tools / touching the provider** → `docs/GOTCHAS.md` → *`allowedTools` does NOT restrict* + ADR `0002`.
+- **Before writing an integration test that asserts post-turn state** → `docs/GOTCHAS.md` → *MockProvider stream stays open*.
+- **Before committing on a shared branch** (esp. `skill/taskflow-v2`) → `docs/GOTCHAS.md` → *Shared working tree* + ADR `0003`: stage only your own hunks, verify the diff is yours.
+- **Before editing any `.md` / skill file** → `docs/GOTCHAS.md` → *Prettier corrupts markdown* (NEVER prettier `.md`).
+- **Before deploying / restarting** → `docs/GOTCHAS.md` → *Never `node dist/index.js`; never deploy v2 to `.63` pre-cutover*.
+- **Turning a security-sensitive inbound feature on** → ADR `0001` (DARK-until-registered).
+
+**Rituals (do them, don't just read them):**
+- Every silent bug earns a guardrail — add the cheapest executable check that
+  would have caught it *in the same change*, then a `docs/GOTCHAS.md` entry.
+- Memory is a cache: if a fact is load-bearing for the codebase, **promote** it
+  from agent memory into `docs/` (a GOTCHAS entry or an ADR) so the *other* agent
+  and humans see it.
+
 ## Entity Model
 
 ```
