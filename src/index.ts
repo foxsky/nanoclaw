@@ -7,21 +7,12 @@
 import path from 'path';
 
 import { backfillContainerConfigs, runBackfillSteps } from './backfill-container-configs.js';
-import { backfillTaskflowDestinations } from './backfill-taskflow-destinations.js';
 import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import {
-  defaultInboundResolver,
-  dropScheduledTasksIfDrained,
-  migrateScheduledTasks,
-} from './modules/taskflow/migrate-scheduled-tasks.js';
-import { ensureTaskflowServiceSession } from './modules/taskflow/service-session.js';
-import { initTaskflowDb } from './taskflow-db.js';
-import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
-import { startEmbeddingFeeder } from './embedding-feeder.js';
+import { runStartupPhase } from './startup-registry.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -85,34 +76,6 @@ async function main(): Promise<void> {
   runMigrations(db);
   log.info('Central DB ready', { path: dbPath });
 
-  // 1a. Bootstrap TaskFlow DB once at startup (heavy schema + ALTER TABLE
-  // migrations). Container spawns later only re-check existence; the
-  // long-lived host handles open lazily against this fully-migrated file.
-  bootstrapTaskflowDb(DATA_DIR);
-  log.info('TaskFlow DB ready');
-
-  // 1a.1 Migrate any legacy `scheduled_tasks` rows (status active/paused)
-  // into v2 native messages_in. Idempotent — re-running skips already-
-  // migrated rows. Existing TaskFlow boards' standup/digest/review tasks
-  // begin firing through the new path on first host startup after deploy.
-  {
-    const tfDb = initTaskflowDb(taskflowDbPath(DATA_DIR));
-    const { resolve, closeAll } = defaultInboundResolver();
-    try {
-      const result = migrateScheduledTasks(tfDb, resolve);
-      log.info('TaskFlow scheduled_tasks migration complete', { ...result });
-      // Drop the legacy table once every row has migrated. Re-runs are
-      // safe on already-dropped DBs.
-      dropScheduledTasksIfDrained(tfDb);
-      // Self-heal the agent_destinations rows for MIGRATED boards (the migration
-      // pipeline never ran the two backfill translators). Idempotent + fail-soft.
-      backfillTaskflowDestinations(tfDb);
-    } finally {
-      closeAll();
-      tfDb.close();
-    }
-  }
-
   // 1b. Backfill container_configs from legacy container.json files.
   // Idempotent — skips groups that already have a config row.
   backfillContainerConfigs();
@@ -124,12 +87,12 @@ async function main(): Promise<void> {
   // 1c. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
 
-  // 1d. TaskFlow "service session" (0h-v2 Option A) — the always-active
-  // synthetic session whose outbound.db receives FastAPI-originated
-  // `taskflow_notify` rows. Idempotent + self-healing (re-activates if
-  // ever closed); pollSweep only drains status='active' sessions.
-  ensureTaskflowServiceSession();
-  log.info('TaskFlow service session ready');
+  // 1d. Drain registered post-DB startup hooks (ADR 0006 contract #1). No-op on
+  // pristine core. Runs after DB init + backfill, BEFORE container runtime /
+  // channel adapters / delivery polls — so an overlay can establish state the
+  // delivery layer depends on (e.g. the TaskFlow service session, registered
+  // critical). A critical hook that throws aborts startup (fail-loud).
+  await runStartupPhase('post-db', { dataDir: DATA_DIR });
 
   // 2. Container runtime
   ensureContainerRuntimeRunning();
@@ -223,12 +186,11 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
-  // 6a. Start the host-side TaskFlow embedding feeder (#385). No-op unless
-  // OLLAMA_HOST is configured; otherwise builds/maintains
-  // data/embeddings/embeddings.db (Ollama bge-m3) so the in-container
-  // api_query 'search' ranks semantically instead of falling back to lexical.
-  const embeddingFeeder = startEmbeddingFeeder(DATA_DIR);
-  if (embeddingFeeder) onShutdown(() => embeddingFeeder.stop());
+  // 6a. Drain registered post-services startup hooks (ADR 0006 contract #1).
+  // No-op on pristine core. Runs after delivery polls + host sweep are up,
+  // BEFORE the CLI server — for background feeders/timers (e.g. the TaskFlow
+  // embedding feeder). Non-critical: a throwing hook is logged and skipped.
+  await runStartupPhase('post-services', { dataDir: DATA_DIR });
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();

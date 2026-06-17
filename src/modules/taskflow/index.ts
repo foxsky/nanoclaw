@@ -43,3 +43,4 @@ import './backfill-mcp-json.js';
 import './container-contributions.js'; // ADR 0006 contract #2: registers the TaskFlow container contributor (taskflow.db/embeddings mounts + board-id/memory/holiday/embed env).
 import './host-sweep-register.js'; // ADR 0006 contract #4: register the TaskFlow due-message gate + per-board-TZ recurrence resolver into the core host-sweep hooks.
 import './task-script-sanitizer.js'; // ADR 0006 contract #5: registers the board task-script strip (SEC#11 host leg) into core's sanitizer registry.
+import './startup-hooks.js'; // ADR 0006 contract #1: registers the four TaskFlow boot blocks (bootstrap-db + scheduled-tasks migration + service-session [critical] + embedding-feeder) into core's startup-phase registry.
