@@ -8,6 +8,8 @@
  * Default when only `core.ts` is imported: the core `send_message` /
  * `send_file` / `edit_message` / `add_reaction` tools are available.
  */
+import { basename } from 'path';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -53,6 +55,87 @@ let errorTransform: (err: unknown) => unknown = (err) => err;
 
 export function registerDispatchGuard(guard: DispatchGuard): void {
   dispatchGuards.push(guard);
+}
+
+/**
+ * ADR 0006 contract 8 (per-tool EMIT-hook extension point) — the in-handler
+ * counterpart of the central dispatch guards above. The central guards run at
+ * the `tools/call` seam, BEFORE the handler, with only the raw tool name + args.
+ * The send/file/edit/react SEC#11/#410 board gates instead need the RESOLVED
+ * routing tuple (which conversation this send actually targets) — a value only
+ * the core handler computes (resolveRouting / getRoutingBySeq). So core.ts calls
+ * these runners AFTER routing; pristine core ships them with NO registered hook,
+ * making each runner a no-op / identity, so upstream behaves exactly as before.
+ *
+ * The TaskFlow overlay (`mcp-tools/emit-hooks.ts`, imported by the barrel)
+ * registers one `EmitHook` per gated tool WITHOUT core importing any fork module:
+ *
+ *  - `preEmit(args, routing)` — short-circuit a write before it happens. TaskFlow
+ *    registers the #410 broadcast/forward park here (a cross-conversation send on
+ *    a board session is held for admin approval). Returning a `CallToolResult`
+ *    aborts the handler with it; null proceeds.
+ *  - `sourceGuard(resolvedPath)` — send_file SEC#11 source-path confinement: on a
+ *    board session, refuse a realpath outside the board's own workspace +
+ *    delivered-attachment dirs (the cross-board taskflow.db / session DBs /
+ *    /workspace/global are the exfil targets). Returning a result aborts; null
+ *    proceeds.
+ *  - `safeFilename(requested, sourcePath)` — the outbox DISPLAY filename. The
+ *    default reproduces upstream (`requested || basename(sourcePath)`); TaskFlow
+ *    registers `safeOutboxFilename`, which forces a single basename segment so a
+ *    crafted `../../taskflow/taskflow.db` can't direct the copy WRITE outside the
+ *    per-message outbox dir.
+ *  - `postEmit(routing)` — a side effect AFTER the write. TaskFlow registers the
+ *    same-conversation dedup mark (`markIfSameConv`).
+ *  - `externalTargetGuard(routing)` — edit_message/add_reaction route by
+ *    HISTORICAL message seq, so the resolved routing may point at an EXTERNAL
+ *    conversation; TaskFlow refuses the cross-conversation edit/react here (the
+ *    exfil bypass of the #410 broadcast gate). Returning a result aborts.
+ *
+ * One hook object per tool (last registration wins; one consumer each). All slots
+ * are optional — an unset slot keeps the upstream identity behavior. */
+type EmitRouting = { channel_type: string | null; platform_id: string | null; resolvedName?: string };
+export interface EmitHook {
+  preEmit?: (args: Record<string, unknown>, routing: EmitRouting) => CallToolResult | null;
+  sourceGuard?: (resolvedPath: string) => CallToolResult | null;
+  safeFilename?: (requested: string | undefined, sourcePath: string) => string;
+  postEmit?: (routing: EmitRouting) => void;
+  externalTargetGuard?: (routing: EmitRouting) => CallToolResult | null;
+}
+const emitHooks = new Map<string, EmitHook>();
+
+export function registerEmitHook(tool: string, hook: EmitHook): void {
+  emitHooks.set(tool, hook);
+}
+
+/** Pre-write short-circuit (e.g. the #410 broadcast park). null ⇒ proceed. */
+export function runEmitPreHook(
+  tool: string,
+  args: Record<string, unknown>,
+  routing: EmitRouting,
+): CallToolResult | null {
+  return emitHooks.get(tool)?.preEmit?.(args, routing) ?? null;
+}
+
+/** send_file source-path confinement (SEC#11). null ⇒ proceed. */
+export function runEmitSourceGuard(tool: string, resolvedPath: string): CallToolResult | null {
+  return emitHooks.get(tool)?.sourceGuard?.(resolvedPath) ?? null;
+}
+
+/** Outbox display filename. Default = upstream `requested || basename(sourcePath)`. */
+export function runEmitFilename(tool: string, requested: string | undefined, sourcePath: string): string {
+  const hook = emitHooks.get(tool)?.safeFilename;
+  if (hook) return hook(requested, sourcePath);
+  return requested || basename(sourcePath);
+}
+
+/** Post-write side effect (e.g. same-conv dedup mark). */
+export function runEmitPostHook(tool: string, routing: EmitRouting): void {
+  emitHooks.get(tool)?.postEmit?.(routing);
+}
+
+/** edit_message/add_reaction external-conversation guard (SEC#11). null ⇒ proceed. */
+export function runEmitExternalTargetGuard(tool: string, routing: EmitRouting): CallToolResult | null {
+  return emitHooks.get(tool)?.externalTargetGuard?.(routing) ?? null;
 }
 
 export function registerResultTransform(fn: <T>(value: T) => T): void {

@@ -15,6 +15,7 @@ import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from '
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { runAsApprovedReplay } from './taskflow-approval.js';
 import { sendMessage } from './core.js';
+import './emit-hooks.js'; // side-effect: registers the #410 broadcast park hook under test
 
 const BOARD_CHANNEL = 'whatsapp';
 const BOARD_PLATFORM = 'board-chat@g.us';

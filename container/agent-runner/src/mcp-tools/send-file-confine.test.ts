@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { isAllowedBoardSendFilePath, safeOutboxFilename } from './core.js';
+import { isAllowedBoardSendFilePath, safeOutboxFilename } from './emit-hooks.js';
 
 // SEC#11 BLOCKER (whole-epic Codex xhigh): send_file copies a caller-supplied path into the
 // outbox and delivers it to chat — an arbitrary-file-read + exfiltration primitive that the

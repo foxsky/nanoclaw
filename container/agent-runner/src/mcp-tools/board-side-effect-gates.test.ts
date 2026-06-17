@@ -62,7 +62,7 @@ describe('edit_message / add_reaction external-conversation gate (isExternalBoar
   it('flags a target in another conversation as external (board session)', async () => {
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'b1';
     seedCurrentConversation('whatsapp', 'board@g.us');
-    const { isExternalBoardTarget } = await import('./core.ts');
+    const { isExternalBoardTarget } = await import('./emit-hooks.ts');
     expect(isExternalBoardTarget({ channel_type: 'whatsapp', platform_id: 'other-board@g.us' })).toBe(true);
     expect(isExternalBoardTarget({ channel_type: 'whatsapp', platform_id: 'board@g.us' })).toBe(false); // same conv → ok
   });
@@ -70,7 +70,7 @@ describe('edit_message / add_reaction external-conversation gate (isExternalBoar
   it('does not gate non-board agents', async () => {
     delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
     seedCurrentConversation('whatsapp', 'board@g.us');
-    const { isExternalBoardTarget } = await import('./core.ts');
+    const { isExternalBoardTarget } = await import('./emit-hooks.ts');
     expect(isExternalBoardTarget({ channel_type: 'whatsapp', platform_id: 'other-board@g.us' })).toBe(false);
   });
 });

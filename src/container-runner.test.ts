@@ -11,14 +11,16 @@ vi.mock('./container-runtime.js', async (importOriginal) => ({
 import {
   __seedActiveContainerForTest,
   ensureAgentSecretMode,
-  holidayExemptEnvArgs,
   killContainer,
-  memoryEnvArgs,
-  replayContainerEnvArgs,
   resolveFlipMode,
   resolveProviderName,
-  taskflowEmbedEnvArgs,
 } from './container-runner.js';
+import {
+  holidayExemptEnvArgs,
+  memoryEnvArgs,
+  replayContainerEnvArgs,
+  taskflowEmbedEnvArgs,
+} from './modules/taskflow/container-contributions.js';
 
 describe('killContainer last-killer-wins (L4)', () => {
   it('a later kill with no onExit cancels an earlier caller’s respawn callback', () => {

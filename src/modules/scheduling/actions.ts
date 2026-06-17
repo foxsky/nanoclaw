@@ -10,45 +10,12 @@
 import type Database from 'better-sqlite3';
 
 import { wakeContainer } from '../../container-runner.js';
-import { getAgentGroup } from '../../db/agent-groups.js';
 import { getSession } from '../../db/sessions.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
-import { resolveTaskflowBoardId } from '../../taskflow-db.js';
+import { sanitizeTaskScript } from '../../task-script-sanitizer.js';
 import type { Session } from '../../types.js';
 import { cancelTask, insertTask, pauseTask, resumeTask, updateTask, type TaskUpdate } from './db.js';
-
-/**
- * Defense-in-depth host layer: a TaskFlow board session must not persist a task `script`. The
- * container MCP gate (scheduling.ts) and execution gate (task-script.ts) already refuse scripts on
- * boards, but there was no host-side check — unlike install_packages' two layers. Strip + warn if
- * a script reaches here for a board session.
- */
-function stripBoardScript(session: Session, script: string | null): string | null {
-  if (!script) return script;
-  const ag = getAgentGroup(session.agent_group_id);
-  if (!ag) {
-    // Can't resolve the agent group → can't confirm this is a non-board session. Fail CLOSED.
-    log.warn('Host scheduling: stripping task script — agent group unresolved (cannot confirm non-board)', {
-      agentGroupId: session.agent_group_id,
-    });
-    return null;
-  }
-  // Residual fail-open: resolveTaskflowBoardId swallows a taskflow.db open error and returns
-  // undefined (indistinguishable from a genuine non-board session), so a board script could slip
-  // through if taskflow.db is unreadable at this instant. Narrow + pre-existing — the board's
-  // container just used taskflow.db to emit this very system message — and the container MCP gate
-  // (scheduling.ts) + execution gate (task-script.ts) are the primary controls.
-  const boardId = resolveTaskflowBoardId(ag.folder, true);
-  if (boardId) {
-    log.warn('Host scheduling: stripped task script for a TaskFlow board session', {
-      agentGroupId: session.agent_group_id,
-      boardId,
-    });
-    return null;
-  }
-  return script;
-}
 
 export async function handleScheduleTask(
   content: Record<string, unknown>,
@@ -57,7 +24,7 @@ export async function handleScheduleTask(
 ): Promise<void> {
   const taskId = content.taskId as string;
   const prompt = content.prompt as string;
-  const script = stripBoardScript(session, content.script as string | null);
+  const script = sanitizeTaskScript(session, content.script as string | null);
   const processAfter = content.processAfter as string;
   const recurrence = (content.recurrence as string) || null;
 
@@ -116,7 +83,7 @@ export async function handleUpdateTask(
     update.recurrence = content.recurrence as string | null;
   }
   if (content.script === null || typeof content.script === 'string') {
-    update.script = stripBoardScript(session, content.script as string | null);
+    update.script = sanitizeTaskScript(session, content.script as string | null);
   }
   const touched = updateTask(inDb, taskId, update);
   log.info('Task updated', { taskId, touched, fields: Object.keys(update) });

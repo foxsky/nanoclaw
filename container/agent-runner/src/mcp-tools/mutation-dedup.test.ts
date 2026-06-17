@@ -13,6 +13,7 @@ import {
 } from '../db/connection.ts';
 import { getUndeliveredMessages } from '../db/messages-out.ts';
 import { sendFile, sendMessage } from './core.ts';
+import './emit-hooks.ts'; // side-effect: registers the same-conv dedup postEmit hook under test
 import {
   __resetDedupForTesting,
   clearPendingCreateCard,

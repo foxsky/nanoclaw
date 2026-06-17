@@ -21,7 +21,6 @@ import {
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
 import { invalidPackageName } from './package-validation.js';
-import { readEnvFile } from './env.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
@@ -32,8 +31,7 @@ import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
-import { ensureTaskflowDb, taskflowDir } from './taskflow-mount.js';
-import { resolveTaskflowBoardId } from './taskflow-db.js';
+import { collectContainerContributions, type ContainerContribution } from './container-contributor-registry.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -229,7 +227,20 @@ async function spawnContainer(session: Session): Promise<void> {
   // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
   const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
 
-  const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
+  // Install-overlay container contributions (extra mounts + env). Empty on
+  // pristine core. Computed once so contributor side effects (mkdir, taskflow
+  // DB bootstrap) fire once, then threaded into both buildMounts and
+  // buildContainerArgs. Reserved-path / reserved-env guards are enforced inside
+  // collectContainerContributions.
+  const contributorContribution = collectContainerContributions({
+    sessionDir: sessionDir(agentGroup.id, session.id),
+    dataDir: DATA_DIR,
+    agentGroupFolder: agentGroup.folder,
+    agentGroupId: agentGroup.id,
+    hostEnv: process.env,
+  });
+
+  const mounts = buildMounts(agentGroup, session, containerConfig, contribution, contributorContribution);
   const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
   // OneCLI agent identifier is always the agent group id — stable across
   // sessions and reversible via getAgentGroup() for approval routing.
@@ -241,6 +252,7 @@ async function spawnContainer(session: Session): Promise<void> {
     containerConfig,
     provider,
     contribution,
+    contributorContribution,
     agentIdentifier,
   );
 
@@ -324,86 +336,6 @@ export function resolveProviderName(
   return (sessionProvider || containerConfigProvider || 'claude').toLowerCase();
 }
 
-export function replayContainerEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const args: string[] = [];
-  if (env.NANOCLAW_TOOL_USES_PATH) {
-    args.push('-e', `NANOCLAW_TOOL_USES_PATH=${env.NANOCLAW_TOOL_USES_PATH}`);
-  }
-  if (env.NANOCLAW_PHASE2_RAW_PROMPT === '1') {
-    args.push('-e', 'NANOCLAW_PHASE2_RAW_PROMPT=1');
-  }
-  if (env.NANOCLAW_PHASE_REPLAY_NOW) {
-    args.push('-e', `NANOCLAW_PHASE_REPLAY_NOW=${env.NANOCLAW_PHASE_REPLAY_NOW}`);
-  }
-  return args;
-}
-
-// The native-memory feature knobs forwarded from the host into every container so per-board
-// memory can be turned on without a per-group env path: hybrid recall (EMBED_*), the
-// auto-capture backend (EXTRACT_*), and forgetting (MAX_AGE_DAYS / KEEP_TOP_N). An EXACT
-// allowlist (not a prefix) — mirroring replayContainerEnvArgs above — so none of these can be
-// NANOCLAW_TASKFLOW_BOARD_ID (board scope), the proxy, or auth, AND an operator who happens to
-// name a secret in the namespace doesn't get it forwarded. Add a new knob here when one is read
-// by container/agent-runner/src (grep NANOCLAW_MEMORY_).
-const MEMORY_ENV_KEYS = [
-  'NANOCLAW_MEMORY_EXTRACT_BACKEND',
-  'NANOCLAW_MEMORY_EXTRACT_MODEL',
-  'NANOCLAW_MEMORY_EXTRACT_URL',
-  'NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS',
-  'NANOCLAW_MEMORY_EMBED_MODEL',
-  'NANOCLAW_MEMORY_EMBED_URL',
-  'NANOCLAW_MEMORY_EMBED_TIMEOUT_MS',
-  'NANOCLAW_MEMORY_MAX_AGE_DAYS',
-  'NANOCLAW_MEMORY_KEEP_TOP_N',
-] as const;
-
-export function memoryEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const args: string[] = [];
-  for (const key of MEMORY_ENV_KEYS) {
-    const value = env[key];
-    if (value !== undefined) {
-      args.push('-e', `${key}=${value}`);
-    }
-  }
-  return args;
-}
-
-// TaskFlow holiday-skip wiring for the CONTAINER warm-gate. The host sweep gate reads
-// agentGroup.folder + TASKFLOW_HOLIDAY_EXEMPT in-process, but the warm container's gate
-// (container/agent-runner/src/runner-gate-apply.ts isHolidayExempt) needs both forwarded:
-//   - NANOCLAW_GROUP_FOLDER  — always; the exempt key matches 'folder' or 'folder:kind'.
-//                              Read by poll-loop.ts and passed as agentGroupFolder into the gate.
-//   - TASKFLOW_HOLIDAY_EXEMPT — verbatim, ONLY when set (no empty -e), so an unset operator list
-//                              leaves the container's exempt at its default-false (unchanged).
-// Folder is a spawn parameter (not env); the exempt list is host env. Pure for unit testing.
-export function holidayExemptEnvArgs(folder: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const args = ['-e', `NANOCLAW_GROUP_FOLDER=${folder}`];
-  if (env.TASKFLOW_HOLIDAY_EXEMPT) {
-    args.push('-e', `TASKFLOW_HOLIDAY_EXEMPT=${env.TASKFLOW_HOLIDAY_EXEMPT}`);
-  }
-  return args;
-}
-
-// TaskFlow semantic-search embed config (#385). The in-container api_query
-// 'search' handler embeds the search text itself, and MUST use the same model
-// the host EmbeddingService indexed tasks with (else query/task vectors are
-// incomparable). Forward OLLAMA_HOST/EMBEDDING_MODEL from .env, renamed into
-// the NANOCLAW_TASKFLOW_EMBED_* allowlist namespace (an explicit allowlist —
-// can't be board scope, the proxy, or auth). Gated on OLLAMA_HOST: unset =>
-// [] => no embed env => search falls back to lexical (matches the feeder-off
-// host side). Reads .env, so `env` is injectable for tests.
-export function taskflowEmbedEnvArgs(
-  env: Record<string, string> = readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL']),
-): string[] {
-  if (!env.OLLAMA_HOST) return [];
-  return [
-    '-e',
-    `NANOCLAW_TASKFLOW_EMBED_URL=${env.OLLAMA_HOST}`,
-    '-e',
-    `NANOCLAW_TASKFLOW_EMBED_MODEL=${env.EMBEDDING_MODEL || 'bge-m3'}`,
-  ];
-}
-
 // Resolve the opt-in NANOCLAW_ONECLI_AUTO_SECRET_MODE knob to a valid gateway secret mode, or
 // null when the feature is off. Fail-closed on a malformed value (only the two real modes pass),
 // so a typo never reaches the gateway as a bad mode. Unset => null => current behavior unchanged.
@@ -435,6 +367,7 @@ function buildMounts(
   session: Session,
   containerConfig: import('./container-config.js').ContainerConfig,
   providerContribution: ProviderContainerContribution,
+  contributorContribution: ContainerContribution,
 ): VolumeMount[] {
   const projectRoot = process.cwd();
 
@@ -472,25 +405,6 @@ function buildMounts(
   if (fs.existsSync(inboundDbPath)) {
     mounts.push({ hostPath: inboundDbPath, containerPath: '/workspace/inbound.db', readonly: true });
   }
-
-  // Single host-owned TaskFlow DB shared by every container. The DIRECTORY
-  // (not just the file) is mounted so SQLite's `-journal` sidecar can live
-  // beside the main DB on either side of the mount — file-only mounts
-  // would put the container's journal inside the session dir, breaking
-  // crash recovery. Heavy schema migration runs once at host startup
-  // (bootstrapTaskflowDb in src/index.ts); this guard only confirms the
-  // file exists (and falls back to bootstrap if a test/CLI bypassed init).
-  ensureTaskflowDb(DATA_DIR);
-  mounts.push({ hostPath: taskflowDir(DATA_DIR), containerPath: '/workspace/taskflow', readonly: false });
-
-  // Embeddings DB (#385) — read-only mount of the embeddings DIRECTORY (not the
-  // file) so SQLite's `-journal` sidecar can live beside the DB. embeddings.db
-  // is journal_mode=DELETE (host writes, container reads — WAL's -shm isn't
-  // VirtioFS-coherent). Always mounted: empty when the host feeder is off
-  // (OLLAMA_HOST unset) → reader finds no DB → lexical fallback.
-  const embeddingsDir = path.join(DATA_DIR, 'embeddings');
-  fs.mkdirSync(embeddingsDir, { recursive: true });
-  mounts.push({ hostPath: embeddingsDir, containerPath: '/workspace/embeddings', readonly: true });
 
   // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
@@ -554,6 +468,13 @@ function buildMounts(
   // Provider-contributed mounts (e.g. opencode-xdg)
   if (providerContribution.mounts) {
     mounts.push(...providerContribution.mounts);
+  }
+
+  // Install-overlay container-contributor mounts (e.g. TaskFlow taskflow.db /
+  // embeddings). Reserved-path guards (no /workspace, no inbound.db remount —
+  // SEC#8/#414) were already enforced in collectContainerContributions.
+  if (contributorContribution.mounts) {
+    mounts.push(...contributorContribution.mounts);
   }
 
   return mounts;
@@ -628,6 +549,7 @@ async function buildContainerArgs(
   containerConfig: import('./container-config.js').ContainerConfig,
   provider: string,
   providerContribution: ProviderContainerContribution,
+  contributorContribution: ContainerContribution,
   agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
@@ -636,38 +558,14 @@ async function buildContainerArgs(
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Opt-in tool_use capture for the v1↔v2 comparator harness. Off in prod.
-  args.push(...replayContainerEnvArgs());
-
-  // Operator-set native-memory knobs (NANOCLAW_MEMORY_*). Injected before the host-critical
-  // vars below (board id, provider, gateway) so those always win on any conflict — though the
-  // prefix can't collide with them anyway.
-  args.push(...memoryEnvArgs());
-
-  // TaskFlow semantic-search embed config (#385) — forwards OLLAMA_HOST/
-  // EMBEDDING_MODEL so the in-container api_query 'search' embeds the query with
-  // the host feeder's model. [] when OLLAMA_HOST unset (search stays lexical).
-  args.push(...taskflowEmbedEnvArgs());
-
-  // v1 parity: MCP handlers host-inject board_id from this env so the agent
-  // never has to construct it. Resolve via the boards table — folder→id is
-  // NOT always `board-<folder>` (historical renames, board_groups mapping).
-  // Phase 3 production-snapshot replays can intentionally run a local fixture
-  // folder against a historical DB snapshot where the board's production
-  // folder name differs. Keep normal production resolution folder-driven, but
-  // allow the explicit replay-only board id to pin the restored snapshot board.
-  const taskflowBoardId = resolveTaskflowBoardId(
-    agentGroup.folder,
-    true,
-    process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID,
-  );
-  if (taskflowBoardId) {
-    args.push('-e', `NANOCLAW_TASKFLOW_BOARD_ID=${taskflowBoardId}`);
+  // Install-overlay container-contributor env (e.g. TaskFlow board-id, memory
+  // knobs, holiday-skip, embed config). Empty on pristine core. Emitted BEFORE
+  // provider env and the host-critical OneCLI/gateway env below so those always
+  // win on any key collision; reserved-key drops (TZ, NANOCLAW_ONECLI_*) were
+  // already enforced in collectContainerContributions.
+  for (const [key, value] of Object.entries(contributorContribution.env ?? {})) {
+    args.push('-e', `${key}=${value}`);
   }
-
-  // TaskFlow holiday-skip: forward the group folder (always) + operator exempt list (only when
-  // set) so the container warm-gate's isHolidayExempt can match. See holidayExemptEnvArgs.
-  args.push(...holidayExemptEnvArgs(agentGroup.folder));
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

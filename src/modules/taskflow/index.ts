@@ -40,3 +40,6 @@ registerApprovalHandler('taskflow_gated_action', applyTaskflowGatedAction);
 setUnroutedDmResolver(resolveUnroutedExternalDm);
 import './migrations-register.js'; // ADR 0006 contract #3: side-effect import that registers the two fork migrations (user-roles-unique-indexes + main-control) into the core runner before runMigrations() runs.
 import './backfill-mcp-json.js';
+import './container-contributions.js'; // ADR 0006 contract #2: registers the TaskFlow container contributor (taskflow.db/embeddings mounts + board-id/memory/holiday/embed env).
+import './host-sweep-register.js'; // ADR 0006 contract #4: register the TaskFlow due-message gate + per-board-TZ recurrence resolver into the core host-sweep hooks.
+import './task-script-sanitizer.js'; // ADR 0006 contract #5: registers the board task-script strip (SEC#11 host leg) into core's sanitizer registry.
