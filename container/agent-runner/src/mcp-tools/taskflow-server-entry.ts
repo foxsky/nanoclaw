@@ -19,12 +19,18 @@
  *     (the parent blocks on that sentinel before handshaking)
  *   - MCP JSON-RPC over stdio (StdioServerTransport)
  */
-import { initTaskflowDb } from '../db/connection.js';
+import { initTaskflowDb } from './db/taskflow-db.js';
 import { setServiceOutboundDbPath, setVerbatimIds } from './taskflow-helpers.js';
 // SSOT for the FastAPI tool surface — the side-effect tool registrations + the
 // allowlist (gates BOTH tools/list and tools/call). The SAME allowlist filters
 // the published contract artifact (contract.ts), so they can't drift.
 import { FASTAPI_ALLOWLIST } from './taskflow-server-tools.js';
+// ADR 0006 contract 8: register the dispatch guard + surrogate sanitizers into
+// server.ts. The full in-container barrel pulls this via index.ts, but the
+// FastAPI entry imports only the taskflow tool set, so register it explicitly —
+// otherwise the FastAPI surface loses the external-actor deny and the
+// lone-surrogate sanitization on tool output.
+import './dispatch-extensions.js';
 import { startMcpServer, type ToolArgGuard } from './server.js';
 
 // --dump-contract: print the published MCP contract (the FastAPI tools/list

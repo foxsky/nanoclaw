@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import {
-  closeSessionDb,
-  closeTaskflowDb,
-  getOutboundDb,
-  initTestSessionDb,
-} from './db/connection.ts';
+import { closeSessionDb, getOutboundDb, initTestSessionDb } from './db/connection.ts';
+import { closeTaskflowDb } from './mcp-tools/db/taskflow-db.ts';
 import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import { __resetTurnActorForTesting, setTurnActor } from './mcp-tools/turn-actor.ts';
 import { handleTaskflowProjectNoteUpdate } from './poll-loop.ts';

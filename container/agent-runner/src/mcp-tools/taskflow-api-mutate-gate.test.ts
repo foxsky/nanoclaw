@@ -12,7 +12,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeSessionDb, closeTaskflowDb, getOutboundDb, initTestSessionDb } from '../db/connection.js';
+import { closeSessionDb, getOutboundDb, initTestSessionDb } from '../db/connection.js';
+import { closeTaskflowDb } from './db/taskflow-db.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 

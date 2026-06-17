@@ -27,6 +27,9 @@ import './taskflow-api-notes.js';
 import './rename-board-person.js';
 import './taskflow-api-comment.js';
 import './memory.js';
+import './db/taskflow-db.js';
+import './db/web-chat-reply-transform.js';
+import './dispatch-extensions.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {

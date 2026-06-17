@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 
 import { TaskflowEngine } from '../taskflow-engine.js';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeTaskflowDb } from './db/taskflow-db.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 
 // SEC#10 (#416): countAdminCascade is the READ-ONLY preflight that lets the api_admin gate size a

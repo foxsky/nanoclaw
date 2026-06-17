@@ -16,7 +16,8 @@ import { EXECUTE_APPROVED_ACTION, executeApprovedAction } from './mcp-tools/task
 // modules run in a separate subprocess, so their registrations don't reach the replay path here.
 import './mcp-tools/approved-executors.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, openInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, openInboundDb, getOutboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getTaskflowDb } from './mcp-tools/db/taskflow-db.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import {
   clearCurrentInReplyTo,

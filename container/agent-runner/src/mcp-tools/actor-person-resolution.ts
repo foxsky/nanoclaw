@@ -23,7 +23,7 @@
  */
 import type { Database } from 'bun:sqlite';
 
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { brPhoneMatchVariants, normalizePhone } from '../taskflow-engine.js';
 
 /**

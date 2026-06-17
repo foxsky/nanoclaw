@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.js';
+import { closeSessionDb, initTestSessionDb } from '../db/connection.js';
+import { closeTaskflowDb } from './db/taskflow-db.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 import { apiAdminTool } from './taskflow-api-mutate.js';
 import { setVerbatimIds } from './taskflow-helpers.js';

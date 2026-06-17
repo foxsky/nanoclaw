@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 
-import { closeTaskflowDb } from './db/connection.ts';
+import { closeTaskflowDb } from './mcp-tools/db/taskflow-db.ts';
 import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import { TaskflowEngine } from './taskflow-engine.ts';
 

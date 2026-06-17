@@ -5,13 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDb, getDb, initTestDb } from '../../db/index.js';
 import { runMigrations } from '../../db/migrations/index.js';
-import {
-  createMessagingGroup,
-  createMessagingGroupAgent,
-  setMainControlMessagingGroup,
-} from '../../db/messaging-groups.js';
+import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
+import { setMainControlMessagingGroup } from './messaging-groups-main-control.js';
 import type { Session } from '../../types.js';
 import { checkMainControlSession } from './permission.js';
+// Fork-coupled test: side-effect import registers the main-control migration so
+// runMigrations() adds the is_main_control column this gate test depends on.
+import './migrations-register.js';
 
 const now = '2026-05-05T00:00:00Z';
 

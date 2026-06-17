@@ -6,7 +6,7 @@
  */
 import path from 'path';
 
-import { backfillContainerConfigs } from './backfill-container-configs.js';
+import { backfillContainerConfigs, runBackfillSteps } from './backfill-container-configs.js';
 import { backfillTaskflowDestinations } from './backfill-taskflow-destinations.js';
 import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
@@ -116,6 +116,10 @@ async function main(): Promise<void> {
   // 1b. Backfill container_configs from legacy container.json files.
   // Idempotent — skips groups that already have a config row.
   backfillContainerConfigs();
+  // Post-backfill extension point (ADR 0006 #10): registered overlay steps
+  // augment the seeded rows (e.g. TaskFlow .mcp.json carry-forward). No-op on
+  // pristine core (empty registry).
+  runBackfillSteps();
 
   // 1c. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();

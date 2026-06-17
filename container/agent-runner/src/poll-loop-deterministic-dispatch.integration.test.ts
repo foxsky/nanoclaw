@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import {
-  closeSessionDb,
-  closeTaskflowDb,
-  getInboundDb,
-  getOutboundDb,
-  initTestSessionDb,
-} from './db/connection.ts';
+import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from './db/connection.ts';
+import { closeTaskflowDb } from './mcp-tools/db/taskflow-db.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import {
   handleTaskflowAddExternalParticipantToLatestMeeting,

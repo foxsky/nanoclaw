@@ -20,7 +20,7 @@
  * the trusted URL-path id; `normalizeAgentIds` is verbatim-aware and a
  * no-op in the subprocess). Auth/actor resolved FastAPI-side, flat.
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { enqueueWebChatInbound } from '../db/taskflow-outbound.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';

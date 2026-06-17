@@ -38,3 +38,5 @@ registerApprovalHandler('taskflow_gated_action', applyTaskflowGatedAction);
 // to the existing drop for anything without an active grant. See
 // 2026-06-13-rc5ext-inbound-design.md.
 setUnroutedDmResolver(resolveUnroutedExternalDm);
+import './migrations-register.js'; // ADR 0006 contract #3: side-effect import that registers the two fork migrations (user-roles-unique-indexes + main-control) into the core runner before runMigrations() runs.
+import './backfill-mcp-json.js';

@@ -14,7 +14,7 @@
  * the flat MCP args carry no non-agent user identity — the engine
  * methods do ZERO owner auth.
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import { getVerbatimIds } from './taskflow-helpers.js';

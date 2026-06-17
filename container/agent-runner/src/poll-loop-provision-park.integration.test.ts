@@ -1,13 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import {
-  closeSessionDb,
-  closeTaskflowDb,
-  getInboundDb,
-  getOutboundDb,
-  getTaskflowDb,
-  initTestSessionDb,
-} from './db/connection.ts';
+import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from './db/connection.ts';
+import { closeTaskflowDb, getTaskflowDb } from './mcp-tools/db/taskflow-db.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import { runAsApprovedReplay } from './mcp-tools/taskflow-approval.ts';
 import { handleTaskflowPendingChildBoardRegistration } from './poll-loop.ts';

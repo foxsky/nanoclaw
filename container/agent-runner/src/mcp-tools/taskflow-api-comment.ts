@@ -18,7 +18,7 @@
  * WhatsApp host path delivers them; FastAPI ignores them post-0j-a;
  * FastAPI-originated push delivery is the tracked 0h-v2 / Phase-3 item).
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 // Author resolution (person_id-keying for the engine's self-comment notification
 // suppression, plus the live-adapter JID phone match) lives in the shared

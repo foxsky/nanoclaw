@@ -1,5 +1,5 @@
 /** Three note-mutation MCP tools — trivial delegates to engine methods. */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';

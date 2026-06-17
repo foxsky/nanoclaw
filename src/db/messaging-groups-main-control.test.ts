@@ -11,13 +11,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDb, getDb, initTestDb } from '../db/index.js';
 import { runMigrations } from './migrations/index.js';
+import { createMessagingGroup, createMessagingGroupAgent, getMessagingGroup } from './messaging-groups.js';
 import {
-  createMessagingGroup,
-  createMessagingGroupAgent,
   getMainControlMessagingGroup,
-  getMessagingGroup,
   setMainControlMessagingGroup,
-} from './messaging-groups.js';
+} from '../modules/taskflow/messaging-groups-main-control.js';
+// Fork-coupled test: side-effect import registers the main-control migration so
+// runMigrations() adds the is_main_control column these tests depend on.
+import '../modules/taskflow/migrations-register.js';
 
 const now = '2026-05-05T00:00:00Z';
 

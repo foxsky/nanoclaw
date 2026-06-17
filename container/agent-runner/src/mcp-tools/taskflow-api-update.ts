@@ -2,7 +2,7 @@
  * api_update_simple_task. The entire field/column/assignee/role-gate flow
  * lives in this handler — there is no engine method for "update".
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';

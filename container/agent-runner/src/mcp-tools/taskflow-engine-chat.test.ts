@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeTaskflowDb } from './db/taskflow-db.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 

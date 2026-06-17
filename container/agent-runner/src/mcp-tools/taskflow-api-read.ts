@@ -7,7 +7,7 @@
  * `ensureTaskSchema()` — the host (or a test) must seed schema before
  * the tool is called.
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';

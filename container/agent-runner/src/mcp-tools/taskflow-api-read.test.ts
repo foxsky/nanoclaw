@@ -4,10 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import {
-  closeTaskflowDb,
-  initTestTaskflowDb,
-} from '../db/connection.js';
+import { closeTaskflowDb, initTestTaskflowDb } from './db/taskflow-db.js';
 
 let db: Database;
 

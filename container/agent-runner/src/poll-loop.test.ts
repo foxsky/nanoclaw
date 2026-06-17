@@ -1,14 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import {
-  initTestSessionDb,
-  initTestTaskflowDb,
-  closeSessionDb,
-  closeTaskflowDb,
-  getInboundDb,
-  getOutboundDb,
-  getTaskflowDb,
-} from './db/connection.js';
+import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
+import { initTestTaskflowDb, closeTaskflowDb, getTaskflowDb } from './mcp-tools/db/taskflow-db.js';
 import {
   clearCurrentWebOrigin,
   crossesWebChatBoundary,

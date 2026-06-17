@@ -23,11 +23,9 @@ import fs from 'fs';
 const DEFAULT_INBOUND_PATH = '/workspace/inbound.db';
 const DEFAULT_OUTBOUND_PATH = '/workspace/outbound.db';
 const DEFAULT_HEARTBEAT_PATH = '/workspace/.heartbeat';
-const DEFAULT_TASKFLOW_PATH = '/workspace/taskflow/taskflow.db';
 
 let _inbound: Database | null = null;
 let _outbound: Database | null = null;
-let _taskflow: Database | null = null;
 let _heartbeatPath: string = DEFAULT_HEARTBEAT_PATH;
 let _testMode = false;
 
@@ -193,51 +191,6 @@ export function touchHeartbeat(): void {
  */
 export function clearStaleProcessingAcks(): void {
   getOutboundDb().prepare("DELETE FROM processing_ack WHERE status = 'processing'").run();
-}
-
-/** TaskFlow DB at /workspace/taskflow/taskflow.db. The DIRECTORY is mounted
- *  by the host so SQLite's `-journal` sidecar lives next to the DB and is
- *  visible from both sides. Both the host-side scheduling cron and the
- *  in-container engine read+write to this file.
- *  journal_mode=DELETE matches the v2 session-DB invariant: WAL's `-shm`
- *  mmap is not coherent across the host/container VirtioFS boundary, so
- *  a cross-mount writer can silently miss updates from the other side. */
-export function getTaskflowDb(): Database {
-  if (!_taskflow) {
-    _taskflow = new Database(DEFAULT_TASKFLOW_PATH);
-    _taskflow.exec('PRAGMA journal_mode = DELETE');
-    _taskflow.exec('PRAGMA busy_timeout = 5000');
-    _taskflow.exec('PRAGMA foreign_keys = ON');
-  }
-  return _taskflow;
-}
-
-/** Open the TaskFlow DB at a caller-supplied path. Used by the standalone
- *  taskflow MCP server entrypoint, which receives `--db <path>` from its
- *  parent (tf-mcontrol's MCPSubprocessClient) instead of the fixed
- *  container mount. Mirrors getTaskflowDb()'s pragmas — journal_mode=DELETE
- *  is load-bearing for cross-mount visibility (see the file header). Call
- *  once before the first getTaskflowDb(). */
-export function initTaskflowDb(path: string): Database {
-  _taskflow?.close();
-  _taskflow = new Database(path);
-  _taskflow.exec('PRAGMA journal_mode = DELETE');
-  _taskflow.exec('PRAGMA busy_timeout = 5000');
-  _taskflow.exec('PRAGMA foreign_keys = ON');
-  return _taskflow;
-}
-
-/** For tests — :memory: TaskFlow DB. Schema is the caller's responsibility
- *  (the engine's `ensureTaskSchema()` only fires for non-readonly use). */
-export function initTestTaskflowDb(): Database {
-  _taskflow = new Database(':memory:');
-  _taskflow.exec('PRAGMA foreign_keys = ON');
-  return _taskflow;
-}
-
-export function closeTaskflowDb(): void {
-  _taskflow?.close();
-  _taskflow = null;
 }
 
 /** For tests — creates in-memory DBs with the session schemas. */

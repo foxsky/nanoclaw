@@ -21,14 +21,21 @@ import { initDb } from '../../src/db/connection.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
-  getMainControlMessagingGroup,
   getMessagingGroupAgentByPair,
   getMessagingGroupAgents,
   getMessagingGroupByPlatform,
-  setMainControlMessagingGroup,
   updateMessagingGroup,
 } from '../../src/db/messaging-groups.js';
+import {
+  getMainControlMessagingGroup,
+  setMainControlMessagingGroup,
+} from '../../src/modules/taskflow/messaging-groups-main-control.js';
 import { runMigrations } from '../../src/db/migrations/index.js';
+// Fork-coupled: this migrate-v2 path writes messaging_groups.is_main_control
+// (v1 is_main → v2 carry-over). The column is added by the TaskFlow overlay
+// migration, which self-registers via this side-effect import — without it
+// runMigrations() below would not create the column.
+import '../../src/modules/taskflow/migrations-register.js';
 import { readEnvFile } from '../../src/env.js';
 import { buildDiscordResolver, type DiscordResolver } from './discord-resolver.js';
 import {

@@ -4,7 +4,7 @@
  *  child_board_registrations) seeded with one board + one manager; then
  *  the engine constructor runs to ensure the rest of the schema. */
 import type { Database } from 'bun:sqlite';
-import { initTestTaskflowDb } from '../db/connection.js';
+import { initTestTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 
 export interface SetupEngineDbOptions {

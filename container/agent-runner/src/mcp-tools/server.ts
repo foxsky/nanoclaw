@@ -12,9 +12,9 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { denyIfExternalActorBlocked } from './chat-actor-guard.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+
 import type { McpToolDefinition } from './types.js';
-import { wellFormedError, wellFormedToolResult } from '../well-formed.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -22,6 +22,46 @@ function log(msg: string): void {
 
 const allTools: McpToolDefinition[] = [];
 const toolMap = new Map<string, McpToolDefinition>();
+
+/**
+ * ADR 0006 contract 8 (dispatch extension point). Pristine core ships these
+ * registries EMPTY/identity, so `tools/call` behaves exactly like upstream. The
+ * TaskFlow overlay registers into them (via `mcp-tools/dispatch-extensions.ts`,
+ * imported by the barrel) WITHOUT importing fork modules into core:
+ *
+ *  - `registerDispatchGuard` — a central, default-deny capability gate run on
+ *    every `tools/call` AFTER the unknown-tool / allowlist / argGuard checks and
+ *    BEFORE the handler. TaskFlow registers the RC5-ext external-actor deny
+ *    (`denyIfExternalActorBlocked`, B6 content-confinement): an authenticated
+ *    external turn is default-denied every tool but the narrow grant-scoped flow.
+ *    A guard returning a `CallToolResult` short-circuits dispatch with it.
+ *  - `registerResultTransform` — rewrites every text exit of `tools/call`
+ *    (unknown-tool, argGuard deny, external deny, AND handler success). TaskFlow
+ *    registers the lone-surrogate sanitizer (`wellFormedToolResult`) so a lone
+ *    UTF-16 surrogate in tool output can't poison the next request's tool_result
+ *    block (Anthropic API 400 "no low surrogate ...").
+ *  - `registerErrorTransform` — rewrites a THROWN handler error before it
+ *    propagates (the SDK's PostToolUseFailure path has no output-rewrite hook).
+ *    TaskFlow registers `wellFormedError`.
+ *
+ * Single-slot transforms (last registration wins; one consumer each). The guard
+ * list composes in registration order. */
+type DispatchGuard = (name: string, args: Record<string, unknown>) => CallToolResult | null;
+const dispatchGuards: DispatchGuard[] = [];
+let resultTransform: <T>(value: T) => T = (value) => value;
+let errorTransform: (err: unknown) => unknown = (err) => err;
+
+export function registerDispatchGuard(guard: DispatchGuard): void {
+  dispatchGuards.push(guard);
+}
+
+export function registerResultTransform(fn: <T>(value: T) => T): void {
+  resultTransform = fn;
+}
+
+export function registerErrorTransform(fn: (err: unknown) => unknown): void {
+  errorTransform = fn;
+}
 
 /** The MCP server identity announced in `initialize` — also the `serverInfo`
  *  the published contract pins (`contract.ts`), so both can't drift. */
@@ -87,37 +127,44 @@ export async function startMcpServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const tool = toolMap.get(name);
-    // Every tools/call text exit is sanitized: a lone UTF-16 surrogate in tool
-    // output (often DB/API text via JSON.stringify, or a model-supplied tool
-    // name) would otherwise poison the next request's tool_result block and make
-    // the Anthropic API reject the whole request (400 "no low surrogate ...").
+    // Every tools/call text exit is run through `resultTransform`: the TaskFlow
+    // overlay registers a lone-surrogate sanitizer there — a lone UTF-16
+    // surrogate in tool output (often DB/API text via JSON.stringify, or a
+    // model-supplied tool name) would otherwise poison the next request's
+    // tool_result block and make the Anthropic API reject the whole request
+    // (400 "no low surrogate ..."). Identity on pristine core.
     if (!tool || (allow && !allow.has(name))) {
-      return wellFormedToolResult({ content: [{ type: 'text', text: `Unknown tool: ${name}` }] });
+      return resultTransform({ content: [{ type: 'text', text: `Unknown tool: ${name}` }] });
     }
     if (allow && argGuards) {
       const reason = argGuards.get(name)?.((args ?? {}) as Record<string, unknown>);
       if (reason) {
-        return wellFormedToolResult({
+        return resultTransform({
           content: [
             { type: 'text', text: JSON.stringify({ success: false, error_code: 'permission_denied', error: reason }) },
           ],
         });
       }
     }
-    // RC5-ext P3 (C7): external-safe capability gate. When the turn resolves to
-    // an authenticated external actor, default-deny every tool but the narrow
-    // grant-scoped flow — the B6 content-confinement control. No-op on normal
-    // (board/system) turns and on the FastAPI/replay surfaces.
-    const externalDeny = denyIfExternalActorBlocked(name, (args ?? {}) as Record<string, unknown>);
-    if (externalDeny) return wellFormedToolResult(externalDeny);
-    // A handler that THROWS bypasses wellFormedToolResult: the error propagates
-    // and the SDK records it (PostToolUseFailure has no output-rewrite hook), so
-    // a lone surrogate in the message would poison the next request. Sanitize
-    // the thrown message here — the only reachable point for our own tools.
+    // ADR 0006 contract 8 central dispatch guards (default-deny capability
+    // gate). TaskFlow registers the RC5-ext P3 (C7) external-safe gate here:
+    // when the turn resolves to an authenticated external actor, default-deny
+    // every tool but the narrow grant-scoped flow — the B6 content-confinement
+    // control. Empty (no deny) on pristine core; no-op on normal (board/system)
+    // turns and on the FastAPI/replay surfaces.
+    for (const guard of dispatchGuards) {
+      const denial = guard(name, (args ?? {}) as Record<string, unknown>);
+      if (denial) return resultTransform(denial);
+    }
+    // A handler that THROWS bypasses `resultTransform`: the error propagates and
+    // the SDK records it (PostToolUseFailure has no output-rewrite hook), so a
+    // lone surrogate in the message would poison the next request. The overlay's
+    // `errorTransform` sanitizes the thrown message here — the only reachable
+    // point for our own tools. Identity on pristine core.
     try {
-      return wellFormedToolResult(await tool.handler(args ?? {}));
+      return resultTransform(await tool.handler(args ?? {}));
     } catch (err) {
-      throw wellFormedError(err);
+      throw errorTransform(err);
     }
   });
 

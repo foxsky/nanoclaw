@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeTaskflowDb } from './db/taskflow-db.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { fastApiOnly } from './taskflow-api-board.js';
 import {

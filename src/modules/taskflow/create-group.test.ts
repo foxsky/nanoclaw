@@ -5,6 +5,9 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, getDb, initTestDb } from '../../db/index.js';
 import { runMigrations } from '../../db/migrations/index.js';
+// Fork-coupled test: register the main-control migration so runMigrations()
+// adds the is_main_control column this test depends on.
+import './migrations-register.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import type { ChannelAdapter } from '../../channels/adapter.js';
 import type { Session } from '../../types.js';

@@ -18,7 +18,7 @@
  * consistent with the R1/R2/R4 structured tools so FastAPI maps not_found/
  * validation_error to the right HTTP status.
  */
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { TaskflowEngine, type TaskflowResult } from '../taskflow-engine.js';
 import { fastApiOnly } from './taskflow-api-board.js';
 import { registerTools } from './server.js';

@@ -7,7 +7,7 @@
  * happy paths and `{ success: false, error_code?, error }` otherwise.
  */
 import type { Database } from 'bun:sqlite';
-import { getTaskflowDb } from '../db/connection.js';
+import { getTaskflowDb } from './db/taskflow-db.js';
 import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, AdminResult, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';

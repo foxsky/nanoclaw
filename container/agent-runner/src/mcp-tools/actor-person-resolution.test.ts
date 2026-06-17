@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { closeTaskflowDb } from '../db/connection.ts';
+import { closeTaskflowDb } from './db/taskflow-db.ts';
 import { resolveAuthenticatedSenderPerson } from './actor-person-resolution.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
 

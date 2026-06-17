@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { backfillTaskflowDestinations } from './backfill-taskflow-destinations.js';
 import { closeDb, getDb, initTestDb } from './db/index.js';
 import { runMigrations } from './db/migrations/index.js';
+// Fork-coupled test: register the main-control migration so runMigrations()
+// adds the is_main_control column this test depends on.
+import './modules/taskflow/migrations-register.js';
 import { seedBoard, seedV2Wiring } from './modules/taskflow/backfill-test-helpers.js';
 import { initTaskflowDb } from './taskflow-db.js';
 

@@ -1,8 +1,9 @@
 /**
  * 0h-v2 web-chat REPLY gate (memo §0.3 step 4, PINNED gate).
  *
- * `writeMessageOut` is the single outbound writer every reply path
- * funnels through (core.ts send_message/send_file, poll-loop
+ * Now lands as the TaskFlow overlay's outbound transform (ADR 0006
+ * contract 7). `writeMessageOut` is the single outbound writer every
+ * reply path funnels through (core.ts send_message/send_file, poll-loop
  * fast-paths, bare-final-text). When the current batch is web-origin
  * (set in current-batch by the poll loop, like `inReplyTo`), the
  * agent's reply to the *triggering* conversation must become a
@@ -13,15 +14,19 @@
  * batch's triggering routing (V1 `appendAgentOutputToBoardChat`
  * replaced exactly `enqueueAgentOutput(chatJid,…)`). High blast
  * radius: a wrong gate breaks replies on every channel.
+ *
+ * Importing `./web-chat-reply-transform.js` fires its top-level
+ * `registerOutboundTransform(...)` so `writeMessageOut` applies the gate.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { closeSessionDb, getOutboundDb, initTestSessionDb } from './connection.js';
-import { writeMessageOut } from './messages-out.js';
+import { closeSessionDb, getOutboundDb, initTestSessionDb } from '../../db/connection.js';
+import { writeMessageOut } from '../../db/messages-out.js';
 import {
   clearCurrentWebOrigin,
   getCurrentWebOrigin,
   setCurrentWebOrigin,
-} from '../current-batch.js';
+} from '../../current-batch.js';
+import './web-chat-reply-transform.js';
 
 const TRIGGER = { platformId: '120363@g.us', channelType: 'whatsapp', threadId: null };
 const WEB = {

@@ -18,16 +18,7 @@ import { getDb, hasTable } from './connection.js';
 
 // ── Messaging Groups ──
 
-/**
- * `is_main_control` is omitted from the create-time input because it has a
- * column DEFAULT (0) and is set later via `setMainControlMessagingGroup`
- * once an admin (or skill bootstrap step) designates the operator's main
- * chat. Keeping it out of the insert path means callers don't accidentally
- * promote a non-main row by passing `is_main_control: 1` in the input
- * literal — the only legitimate path is the dedicated setter, which
- * enforces atomicity via the partial unique index.
- */
-export function createMessagingGroup(group: Omit<MessagingGroup, 'is_main_control'>): void {
+export function createMessagingGroup(group: MessagingGroup): void {
   getDb()
     .prepare(
       `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
@@ -44,69 +35,6 @@ export function getMessagingGroupByPlatform(channelType: string, platformId: str
   return getDb()
     .prepare('SELECT * FROM messaging_groups WHERE channel_type = ? AND platform_id = ?')
     .get(channelType, platformId) as MessagingGroup | undefined;
-}
-
-/**
- * Designate `id` as THE main control messaging group (v1 isMain parity).
- * Atomically clears any existing main and sets the new one in a single
- * transaction so the partial unique index never sees a transient two-main
- * state.
- *
- * Throws if the target id doesn't exist (fail-closed against typos).
- *
- * Side effect: also sets the designated group's wired agents to always-engage
- * (engage_mode='pattern', engage_pattern='.'). The main control group is the
- * operator's command channel and must answer every message (v1 parity), and the
- * router ignores is_main_control when deciding engagement.
- *
- * Designed to be called by:
- *   - Skill bootstrap step (one-time during install).
- *   - Admin command path (operator can re-designate later).
- *
- * Returns the id of a DIFFERENT main that was demoted (or null on first/same-id
- * designation). Re-designation leaves the demoted main's wired agents at
- * always-engage (engage_pattern='.') — that is NOT auto-reverted because the
- * pre-promotion engage config isn't stored and the safe default differs for a
- * DM (always-engage is fine) vs a group (would keep spamming). Callers should
- * warn the operator to reconfigure the old main's engagement.
- */
-export function setMainControlMessagingGroup(id: string): string | null {
-  const db = getDb();
-  let demotedPreviousMain: string | null = null;
-  db.transaction(() => {
-    const exists = db.prepare('SELECT 1 FROM messaging_groups WHERE id = ?').get(id);
-    if (!exists) {
-      throw new Error(`setMainControlMessagingGroup: messaging group "${id}" does not exist`);
-    }
-    const prev = db.prepare('SELECT id FROM messaging_groups WHERE is_main_control = 1 AND id != ?').get(id) as
-      | { id: string }
-      | undefined;
-    demotedPreviousMain = prev?.id ?? null;
-    db.prepare('UPDATE messaging_groups SET is_main_control = 0 WHERE is_main_control = 1').run();
-    db.prepare('UPDATE messaging_groups SET is_main_control = 1 WHERE id = ?').run(id);
-    // The main control group is the operator's command channel — it must respond
-    // to EVERY message, not just triggered/mentioned ones (v1 parity: the main
-    // group always-engaged). The router gates purely on engage_mode/engage_pattern
-    // and ignores is_main_control, so always-engage its wired agents here. (Agents
-    // wired AFTER designation aren't covered — in the migration/bootstrap flows
-    // wiring precedes designation, so the operator's existing agents are caught.)
-    db.prepare(
-      "UPDATE messaging_group_agents SET engage_mode = 'pattern', engage_pattern = '.' WHERE messaging_group_id = ?",
-    ).run(id);
-  })();
-  return demotedPreviousMain;
-}
-
-/**
- * Returns the current main control messaging group, or undefined if none
- * has been designated yet (fresh install before bootstrap, or operator
- * cleared it). Privileged-action handlers MUST treat undefined as a
- * fail-closed signal — drop the action with a warn log.
- */
-export function getMainControlMessagingGroup(): MessagingGroup | undefined {
-  return getDb().prepare('SELECT * FROM messaging_groups WHERE is_main_control = 1').get() as
-    | MessagingGroup
-    | undefined;
 }
 
 /**

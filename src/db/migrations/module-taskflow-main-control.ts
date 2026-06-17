@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-import type { Migration } from './index.js';
+import { registerMigration, type Migration } from './index.js';
 
 /**
  * skill/taskflow-v2 migration — `messaging_groups.is_main_control`.
@@ -41,3 +41,8 @@ export const moduleTaskflowMainControl: Migration = {
     `);
   },
 };
+
+// Self-register into the core migration runner (ADR 0006 contract #3). The
+// taskflow overlay barrel side-effect-imports this file; pristine core never
+// loads it, so the migration never runs on a non-taskflow install.
+registerMigration(moduleTaskflowMainControl);

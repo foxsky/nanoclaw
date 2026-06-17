@@ -4,10 +4,8 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
-import { randomUUID } from 'node:crypto';
-
-import { getCurrentWebOrigin } from '../current-batch.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
+import { applyOutboundTransform } from './outbound-transform.js';
 
 export interface MessageOutRow {
   id: string;
@@ -45,80 +43,13 @@ export interface WriteMessageOut {
  * by seq across BOTH tables. If inbound and outbound could share a seq,
  * the agent's "edit message #5" could resolve to the wrong row.
  */
-/**
- * True only for a plain agent text reply: JSON content with a string
- * `text`, NO `operation` (edit_message/add_reaction — core.ts:208/249)
- * and NO `files` (send_file — core.ts:166). The 0h-v2 web-chat gate
- * transforms ONLY these; operation/file rows pass through untouched
- * (Codex review — they must not be corrupted into board_chat text).
- */
-function isPlainTextReply(content: string): boolean {
-  try {
-    const c = JSON.parse(content) as {
-      text?: unknown;
-      operation?: unknown;
-      files?: unknown;
-    };
-    return (
-      typeof c.text === 'string' && c.operation === undefined && c.files === undefined
-    );
-  } catch {
-    return false;
-  }
-}
-
 export function writeMessageOut(msg: WriteMessageOut): number {
-  // 0h-v2 web-chat reply gate (memo §0.3 step 4). If the batch is
-  // web-origin and this is the reply to the TRIGGERING conversation
-  // (kind:'chat' + routing == the batch's triggering routing — NOT an
-  // explicit `send_message(to:…)`/a2a, which carry different routing),
-  // rewrite it into a `taskflow_web_chat_reply` system row so the host
-  // writes board_chat instead of delivering to the WhatsApp adapter
-  // (V1 `appendAgentOutputToBoardChat` replaced exactly
-  // `enqueueAgentOutput(chatJid,…)`). System/a2a/other-destination
-  // rows pass through untouched.
-  const web = getCurrentWebOrigin();
-  if (
-    web &&
-    msg.kind === 'chat' &&
-    (msg.platform_id ?? null) === web.platformId &&
-    (msg.channel_type ?? null) === web.channelType &&
-    (msg.thread_id ?? null) === web.threadId &&
-    isPlainTextReply(msg.content)
-  ) {
-    // isPlainTextReply guaranteed a string `.text` with no
-    // `operation` (edit/reaction — core.ts:208/249) and no `files`
-    // (send_file — core.ts:166): those pass through UNCHANGED. V1's
-    // `appendAgentOutputToBoardChat` only ever routed the agent's
-    // text; edits/reactions/files are out of web-chat scope.
-    const text = (JSON.parse(msg.content) as { text: string }).text;
-    msg = {
-      ...msg,
-      kind: 'system',
-      platform_id: null,
-      channel_type: null,
-      thread_id: null,
-      content: JSON.stringify({
-        action: 'taskflow_web_chat_reply',
-        board_id: web.board_id,
-        // FULL batch list of web-origin user rows (V1 batch-level
-        // mark-read targets) → tf agent-reply.in_reply_to_chat_ids.
-        board_chat_ids: web.board_chat_ids,
-        text,
-        // G2: never emit an empty sender_name (RunnerConfig.assistantName
-        // defaults to '' and the host CLI accepts blank) — tf would 400
-        // missing_sender_name and 5b would fail-closed → reply silently
-        // lost. Matches the codebase fallback (providers/claude.ts).
-        sender_name: web.sender_name.trim() || 'Assistant',
-        // G1: globally-unique, collision-proof, stable idempotency key.
-        // randomUUID() (not generateId()'s timestamp+rand6, which can
-        // collide same-ms same-group); written ONCE into this row so
-        // delivery.ts retries re-POST the same key → tf dedupes. The
-        // agent-group prefix is for traceability only ('ag' if blank).
-        source_outbound_id: `${web.source_id_prefix || 'ag'}:${randomUUID()}`,
-      }),
-    };
-  }
+  // Outbound transform extension point (ADR 0006 contract 7). Pristine
+  // core registers an identity transform → `msg` is unchanged. The
+  // TaskFlow overlay registers the 0h-v2 web-chat reply gate. A throw
+  // from the transform PROPAGATES (fail-closed) — a web-origin reply
+  // must never fall back to writing the plain chat row.
+  msg = applyOutboundTransform(msg);
 
   const outbound = getOutboundDb();
   const inbound = getInboundDb();

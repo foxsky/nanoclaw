@@ -12,7 +12,8 @@ import {
   setServiceOutboundDbPath,
   setVerbatimIds,
 } from './taskflow-helpers.ts';
-import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.ts';
+import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
+import { closeTaskflowDb } from './db/taskflow-db.ts';
 import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.ts';
 import {
   __resetTurnExternalActorForTesting,

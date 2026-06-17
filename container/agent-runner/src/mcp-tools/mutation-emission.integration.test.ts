@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import {
-  closeSessionDb,
-  closeTaskflowDb,
-  getInboundDb,
-  getOutboundDb,
-  initTestSessionDb,
-} from '../db/connection.ts';
+import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from '../db/connection.ts';
+import { closeTaskflowDb } from './db/taskflow-db.ts';
 import { flushPendingCreateCard } from './mutation-confirmation.ts';
 import { __resetDedupForTesting } from './mutation-dedup.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';

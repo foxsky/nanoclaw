@@ -14,20 +14,31 @@ vi.mock('./config.js', async (orig) => {
 
 /** Boot a fresh DB + return the helpers each test needs. */
 async function setupTestDb() {
-  const [{ initDb }, { runMigrations }, agentGroupsMod, containerConfigsMod, backfillMod] = await Promise.all([
-    import('./db/connection.js'),
-    import('./db/migrations/index.js'),
-    import('./db/agent-groups.js'),
-    import('./db/container-configs.js'),
-    import('./backfill-container-configs.js'),
-  ]);
+  const [{ initDb }, { runMigrations }, agentGroupsMod, containerConfigsMod, backfillMod, mcpJsonMod] =
+    await Promise.all([
+      import('./db/connection.js'),
+      import('./db/migrations/index.js'),
+      import('./db/agent-groups.js'),
+      import('./db/container-configs.js'),
+      import('./backfill-container-configs.js'),
+      // The .mcp.json carry-forward moved to the TaskFlow overlay step (ADR
+      // 0006 #10). The host drains it via runBackfillSteps() right after
+      // backfillContainerConfigs(); these tests invoke the same two steps.
+      import('./modules/taskflow/backfill-mcp-json.js'),
+    ]);
   const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
   runMigrations(db);
+  // Mirror the host startup order: core backfill, then the overlay .mcp.json
+  // carry-forward step.
+  const backfillContainerConfigs = () => {
+    backfillMod.backfillContainerConfigs();
+    mcpJsonMod.backfillMcpJsonServers();
+  };
   return {
     createAgentGroup: agentGroupsMod.createAgentGroup,
     getContainerConfig: containerConfigsMod.getContainerConfig,
     createContainerConfig: containerConfigsMod.createContainerConfig,
-    backfillContainerConfigs: backfillMod.backfillContainerConfigs,
+    backfillContainerConfigs,
   };
 }
 

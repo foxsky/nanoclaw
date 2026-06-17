@@ -18,12 +18,11 @@ import path from 'path';
 
 import { DATA_DIR } from '../src/config.js';
 import { initDb, runMigrations } from '../src/db/index.js';
+import { getMessagingGroup, getMessagingGroupByPlatform } from '../src/db/messaging-groups.js';
 import {
   getMainControlMessagingGroup,
-  getMessagingGroup,
-  getMessagingGroupByPlatform,
   setMainControlMessagingGroup,
-} from '../src/db/messaging-groups.js';
+} from '../src/modules/taskflow/messaging-groups-main-control.js';
 import { getDb } from '../src/db/connection.js';
 
 function usage(): never {

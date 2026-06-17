@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, getDb, initTestDb } from '../../db/index.js';
 import { runMigrations } from '../../db/migrations/index.js';
+// Fork-coupled test: register the main-control migration so runMigrations()
+// adds the is_main_control column this test depends on.
+import './migrations-register.js';
 import type { Session } from '../../types.js';
 
 const now = '2026-05-06T00:00:00Z';

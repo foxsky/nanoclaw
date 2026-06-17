@@ -12,15 +12,29 @@ import { migration012 } from './012-channel-registration.js';
 import { migration013 } from './013-approval-render-metadata.js';
 import { migration014 } from './014-container-configs.js';
 import { migration015 } from './015-cli-scope.js';
-import { migration016 } from './016-user-roles-unique-indexes.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
-import { moduleTaskflowMainControl } from './module-taskflow-main-control.js';
 
 export interface Migration {
   version: number;
   name: string;
   up: (db: Database.Database) => void;
+}
+
+// Extension point (ADR 0006 contract #3). Install-overlay modules (e.g.
+// /add-taskflow) register their migrations at import time via
+// registerMigration(); runMigrations() applies the core array first, then the
+// registered ones. Pristine core ships ZERO registered migrations, so this
+// array is empty and behavior is identical to upstream. Name-keyed idempotency
+// (below) is unchanged: each migration runs at most once regardless of source.
+const registeredModuleMigrations: Migration[] = [];
+
+export function registerMigration(m: Migration): void {
+  registeredModuleMigrations.push(m);
+}
+
+export function getRegisteredMigrations(): readonly Migration[] {
+  return registeredModuleMigrations;
 }
 
 const migrations: Migration[] = [
@@ -37,8 +51,6 @@ const migrations: Migration[] = [
   migration013,
   migration014,
   migration015,
-  migration016,
-  moduleTaskflowMainControl,
 ];
 
 export function runMigrations(db: Database.Database): void {
@@ -60,7 +72,7 @@ export function runMigrations(db: Database.Database): void {
   const applied = new Set<string>(
     (db.prepare('SELECT name FROM schema_version').all() as { name: string }[]).map((r) => r.name),
   );
-  const pending = migrations.filter((m) => !applied.has(m.name));
+  const pending = [...migrations, ...registeredModuleMigrations].filter((m) => !applied.has(m.name));
   if (pending.length === 0) return;
 
   log.info('Running migrations', { count: pending.length });
