@@ -286,3 +286,16 @@ container/agent-runner/src/memory-boot.ts
 setup/migrate-v2/destinations.ts
 setup/migrate-v2/groups.ts
 setup/migrate-v2/step-integration.test.ts
+
+# Container TEST leaks — fork tests that exercise fork-only exports of the
+# whole-file overlays (poll-loop.ts / claude.ts), so they SyntaxError against the
+# pristine upstream baselines. Companions of poll-loop.test.ts / integration.test.ts
+# already above. (Build/tsc can't see these — only an install-then-test gate does;
+# found by running the pristine-core container suite.)
+#   - poll-loop-actor-domain-split.test.ts: fork-only; imports turnActorSenders.
+#   - poll-loop-meeting-when.test.ts: fork-only; imports formatMeetingWhenColon.
+#   - providers/factory.test.ts: upstream test the fork EDITED to assert
+#     TOOL_ALLOWLIST → whole-file test overlay (pristine restores the upstream one).
+container/agent-runner/src/poll-loop-actor-domain-split.test.ts
+container/agent-runner/src/poll-loop-meeting-when.test.ts
+container/agent-runner/src/providers/factory.test.ts
