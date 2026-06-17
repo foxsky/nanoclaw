@@ -93,7 +93,62 @@ reopens the BLOCKER-class SEC holes hardened over ~10 Codex rounds. Zone-1
 deterministic-dispatch evacuation (~290 lines behind a `DeterministicCommandRegistry`,
 golden-order test) is a **separate later refactor**, not split critical path.
 
+`poll-loop.test.ts` ships WITH the poll-loop overlay (installer-copied) and is
+EXCLUDED from the pristine-core test run — it imports the TaskFlow overlay
+(`mcp-tools/db/taskflow-db.js`) because it is the companion test of the whole-file
+poll-loop overlay. A pristine-core `bun test` (no `/add-taskflow`) must not be
+expected to resolve it.
+
+## Installer barrel-append manifest (source of truth — checked in, not history-only)
+
+The `/add-taskflow` installer's idempotent grep-then-append step (W4) must
+re-append exactly these side-effect imports. After W4 reverted both barrels to
+pristine (commit `274718a9`), these imports live ONLY in the installer's
+append-set — the core barrels must NOT carry them. The authoritative list is the
+block removed by `274718a9`; reproduced here so it is not history-only:
+
+**`src/modules/index.ts`** (host) — 2 lines:
+- `import './send-otp/index.js';`
+- `import './taskflow/index.js';`
+
+**`container/agent-runner/src/mcp-tools/index.ts`** (container chat barrel) — 17 lines:
+- `import './send-otp.js';`
+- `import './transcribe-audio.js';`
+- `import './provision-root-board.js';`
+- `import './provision-child-board.js';`
+- `import './create-group.js';`
+- `import './add-destination.js';`
+- `import './taskflow-api-read.js';`
+- `import './taskflow-api-mutate.js';`
+- `import './taskflow-api-update.js';`
+- `import './taskflow-api-notes.js';`
+- `import './rename-board-person.js';`
+- `import './taskflow-api-comment.js';`
+- `import './memory.js';`
+- `import './db/taskflow-db.js';`
+- `import './db/web-chat-reply-transform.js';`
+- `import './dispatch-extensions.js';`
+- `import './emit-hooks.js';`
+
+**`taskflow-api-board.js` is INTENTIONALLY NOT in the chat barrel** (preserve the
+SEC cross-board exclusion — its read tools belong to the FastAPI engine seam
+`taskflow-server-entry.ts` only).
+
+**Security-critical append completeness:** `./emit-hooks.js` (SEC#11/#410 send/
+file/edit/react board gates) and `./db/web-chat-reply-transform.js` (contract #7
+FAIL-CLOSED web-origin anti-spoof outbound transform) self-register at module top
+level and have NO non-test importer in core. If the installer omits either append,
+the in-container chat tools ship UNGATED / the web-origin anti-spoof silently falls
+through. `dispatch-extensions.js` is additionally imported transitively by
+`taskflow-server-entry.ts`, but the chat barrel still needs its own append.
+
 ## Open items
+- Concrete installer rewrite: the append-set above is recorded but `/add-taskflow`
+  SKILL.md does not yet implement the grep-then-append / copy-set steps (still the
+  legacy v1 wizard). An executable CI guardrail (check out pristine core, run
+  `pnpm test` + `bun test` green; and enumerate top-level `register*` registrants
+  and assert each appears in the documented append-set) would catch drift + the two
+  orphan registrants mechanically. Tracked for the installer-rewrite unit.
 - Contract 10 backfill: `registerBackfillStep` vs whole-file overlay (single consumer).
 - `016-user-roles-unique-indexes`: push upstream as generic hardening vs `module-*` rename.
 - `StartupContext` two-phase (`post-db`/`post-services`) — confirm no near-term hook needs a third.

@@ -29,7 +29,9 @@ const toolMap = new Map<string, McpToolDefinition>();
  * ADR 0006 contract 8 (dispatch extension point). Pristine core ships these
  * registries EMPTY/identity, so `tools/call` behaves exactly like upstream. The
  * TaskFlow overlay registers into them (via `mcp-tools/dispatch-extensions.ts`,
- * imported by the barrel) WITHOUT importing fork modules into core:
+ * whose side-effect import is appended to the `mcp-tools/index.ts` barrel by the
+ * /add-taskflow installer — NOT present in pristine core; do not add it to the
+ * core barrel) WITHOUT importing fork modules into core:
  *
  *  - `registerDispatchGuard` — a central, default-deny capability gate run on
  *    every `tools/call` AFTER the unknown-tool / allowlist / argGuard checks and
@@ -67,7 +69,9 @@ export function registerDispatchGuard(guard: DispatchGuard): void {
  * these runners AFTER routing; pristine core ships them with NO registered hook,
  * making each runner a no-op / identity, so upstream behaves exactly as before.
  *
- * The TaskFlow overlay (`mcp-tools/emit-hooks.ts`, imported by the barrel)
+ * The TaskFlow overlay (`mcp-tools/emit-hooks.ts`, whose side-effect import is
+ * appended to the `mcp-tools/index.ts` barrel by the /add-taskflow installer —
+ * NOT present in pristine core; do not add it to the core barrel)
  * registers one `EmitHook` per gated tool WITHOUT core importing any fork module:
  *
  *  - `preEmit(args, routing)` — short-circuit a write before it happens. TaskFlow

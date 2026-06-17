@@ -1,7 +1,8 @@
 /**
  * TaskFlow overlay registration for the ADR 0006 contract 8 dispatch-extension
- * point in `server.ts`. Importing this module (side-effect only, from the
- * `mcp-tools/index.ts` barrel) wires the fork's dispatch behavior into pristine
+ * point in `server.ts`. Importing this module (side-effect only — its import is
+ * appended to the `mcp-tools/index.ts` barrel by the /add-taskflow installer, NOT
+ * present in pristine core) wires the fork's dispatch behavior into pristine
  * core WITHOUT core importing any fork module:
  *
  *  - the RC5-ext P3 (C7) external-actor default-deny capability gate

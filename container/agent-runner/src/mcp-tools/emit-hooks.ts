@@ -1,7 +1,8 @@
 /**
  * TaskFlow overlay for the ADR 0006 contract 8 per-tool EMIT-hook extension
- * point in `server.ts`. Importing this module (side-effect only, from the
- * `mcp-tools/index.ts` barrel) registers the fork's SEC#11/#410 board gates for
+ * point in `server.ts`. Importing this module (side-effect only — its import is
+ * appended to the `mcp-tools/index.ts` barrel by the /add-taskflow installer, NOT
+ * present in pristine core) registers the fork's SEC#11/#410 board gates for
  * the core send/file/edit/react tools WITHOUT core importing any fork module:
  * core calls the inert `runEmit*` runners AFTER routing, and they no-op until
  * this overlay registers a hook.

@@ -81,8 +81,9 @@ registerStartupHook(
 // `taskflow_notify` rows. Idempotent + self-healing (re-activates if
 // ever closed); pollSweep only drains status='active' sessions.
 //
-// CRITICAL: must exist before the delivery polls start (run from
-// post-services). A failure re-throws so the host fails loud instead of
+// CRITICAL: must exist before the delivery polls start, so it registers in
+// the 'post-db' phase (which drains before delivery). Do NOT move it to a
+// later phase. A failure re-throws so the host fails loud instead of
 // silently never delivering engine notifications.
 registerStartupHook(
   'post-db',
