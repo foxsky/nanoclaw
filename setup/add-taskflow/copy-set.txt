@@ -258,8 +258,6 @@ src/modules/taskflow/taskflow-web-chat-reply.ts
 src/modules/taskflow/types-augment-marker.ts
 src/modules/taskflow/types-augment.d.ts
 src/modules/taskflow/util.ts
-src/package-validation.test.ts
-src/package-validation.ts
 src/router-engage.test.ts
 src/taskflow-db.test.ts
 src/taskflow-db.ts
