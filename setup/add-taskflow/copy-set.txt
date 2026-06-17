@@ -201,6 +201,7 @@ src/modules/taskflow/backfill-taskflow-person-destinations.ts
 src/modules/taskflow/backfill-test-helpers.ts
 src/modules/taskflow/channel-group-helpers.d.ts
 src/modules/taskflow/cold-dm.ts
+src/modules/taskflow/container-contributions.test.ts
 src/modules/taskflow/container-contributions.ts
 src/modules/taskflow/create-group.test.ts
 src/modules/taskflow/create-group.ts
