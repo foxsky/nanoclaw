@@ -224,7 +224,14 @@ no-op.
   shipping ungated). Append-sets are factored into the shared `append-sets.sh` so the
   installer and the check read ONE source of truth. Falsified both directions (drop the
   emit-hooks append → FAIL(B); add a bogus append → FAIL(A)).
-  Still TODO: an install-then-test green gate.
+  Codex gpt-5.5/xhigh refinements: Check B now catches the ASSIGNMENT form
+  (`const h = registerEmitHook(...)`), not just bare statements (the old line-start grep
+  missed it); `*.test.ts` excluded (loads via the runner, never a barrel). A purely
+  structural `register[A-Z]…(` shape match was REJECTED — it false-flags the provider /
+  channel / FastAPI-seam registrars wired via other roots this check doesn't seed; the
+  name list stays explicit + maintenance-required (documented in the script).
+  Still TODO: an install-then-test green gate; full structural self-maintenance (model the
+  non-barrel wiring roots) is a NICE follow-up.
 - Contract 10 backfill: `registerBackfillStep` vs whole-file overlay (single consumer).
 - `016-user-roles-unique-indexes`: push upstream as generic hardening vs `module-*` rename.
 - `StartupContext` two-phase (`post-db`/`post-services`) — confirm no near-term hook needs a third.

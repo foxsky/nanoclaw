@@ -21,7 +21,12 @@
 type BootStep = () => void;
 
 /** Contributes a string appended (in registration order) to the runtime
- *  system-prompt addendum. Built once at boot so it stays prompt-cache stable. */
+ *  system-prompt addendum. Built once at boot so it stays prompt-cache stable.
+ *  FAIL-LOUD (unlike a boot step): a throw propagates and aborts boot rather
+ *  than ship a silently-degraded system prompt. A contributor that wants
+ *  graceful degradation must self-guard and return '' (as the fork's
+ *  buildMemoryRecallAddendum does). This matches the original upstream call
+ *  site, which invoked the addendum unwrapped. */
 type SystemPromptAddendum = () => string;
 
 const bootSteps: BootStep[] = [];
@@ -48,15 +53,13 @@ export function runBootSteps(): void {
 }
 
 /** Concatenate every registered addendum (registration order). Empty string in
- *  pristine core. A throwing contributor is skipped (best-effort), not fatal. */
+ *  pristine core. FAIL-LOUD: a throwing contributor propagates (a degraded
+ *  system prompt is a correctness hazard) — the addendum self-guards if it wants
+ *  graceful degradation. Matches the original unwrapped `+ buildMemoryRecallAddendum()`. */
 export function collectSystemPromptAddenda(): string {
   let out = '';
   for (const fn of promptAddenda) {
-    try {
-      out += fn();
-    } catch (err) {
-      console.error(`[agent-runner] prompt addendum failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    out += fn();
   }
   return out;
 }

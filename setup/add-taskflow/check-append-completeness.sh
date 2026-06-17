@@ -25,10 +25,25 @@ COPY_SET="$ROOT/setup/add-taskflow/copy-set.txt"
 # shellcheck source=setup/add-taskflow/append-sets.sh
 source "$ROOT/setup/add-taskflow/append-sets.sh"
 
-# Top-level self-registration calls a copy-set file may use to wire into a core
-# registry. A file matching any of these (at line start) MUST be reachable from
-# an append seed or it ships inert. Keep in sync with the extension contracts.
-REGISTER_CALLS='registerBootStep|registerSystemPromptAddendum|registerMigration|registerContainerContributor|registerStartupHook|registerDueMessageGate|registerTaskScriptSanitizer|registerOutboundTransform|registerEmitHook|registerExtraDb|registerTestSchema|registerDeliveryAction|setUnroutedDmResolver|registerHostSweepHook|registerMigrateV2Step|registerBackfillStep'
+# The core-registry functions wired specifically through the 4 INSTALLER BARRELS
+# (NOT provider/channel/FastAPI-entry registrars — those load via their own roots,
+# which this check does not model). A copy-set file that calls one of these at top
+# level MUST be reachable from an append seed or it ships inert.
+#
+# Detection caveats Codex flagged and how they're handled:
+#  - assignment form: catch both a BARE statement and an assignment LHS
+#    (`const h = registerEmitHook(`, `export const h = await registerEmitHook(`).
+#    Anchored at line-start so `//` / `*` comment lines never match.
+#  - test files are EXCLUDED below: they run under the test runner, never load via
+#    a production barrel, so "ships inert" is meaningless for them.
+#  RESIDUAL (documented bound): this NAME list is maintenance-required — a NEW
+#  contract's barrel-wired registrar must be added here. A purely structural
+#  `register[A-Z]…(` shape match was rejected: it false-flags the provider
+#  (registerProvider), channel (registerChannel) and FastAPI-seam registrars that
+#  are wired via OTHER roots this check doesn't seed. Full self-maintenance would
+#  require modeling those roots (entrypoints + whole-file overwrites) — NICE TODO.
+REG_NAME='(registerBootStep|registerSystemPromptAddendum|registerMigration|registerContainerContributor|registerStartupHook|registerDueMessageGate|registerTaskScriptSanitizer|registerOutboundTransform|registerEmitHook|registerExtraDb|registerTestSchema|registerDeliveryAction|setUnroutedDmResolver|registerHostSweepHook|registerMigrateV2Step|registerBackfillStep)'
+REGISTRANT_RE="^[[:space:]]*((export[[:space:]]+)?(const|let|var)[[:space:]]+[A-Za-z0-9_\$]+[[:space:]]*=[[:space:]]*(await[[:space:]]+)?)?${REG_NAME}\("
 
 [ -f "$COPY_SET" ] || { echo "FAIL: copy-set not found: $COPY_SET"; exit 1; }
 cd "$ROOT"
@@ -113,7 +128,8 @@ done
 # --- Check B: every registrant must be reachable ------------------------------
 for p in "${COPYSET_PATHS[@]}"; do
   [ -f "$p" ] || continue
-  grep -qE "^[[:space:]]*($REGISTER_CALLS)\(" "$p" || continue
+  case "$p" in *.test.ts) continue ;; esac   # test files load via the runner, never a barrel
+  grep -qE "$REGISTRANT_RE" "$p" || continue
   if [ -z "${REACHED[$p]:-}" ]; then
     echo "FAIL(B): $p self-registers (top-level register*()) but is NOT reachable from any installer append seed — it would ship COPIED-BUT-INERT."
     fail=1
