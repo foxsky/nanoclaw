@@ -168,7 +168,9 @@ core extension contracts, PLUS the split-created TaskFlow registrants, then VERI
 by the delete-pristine-build / install-rebuild loop. Two Tier-A entries were
 re-classified as **core** during verification (the pristine-core build named them):
 `src/package-validation.ts{,.test.ts}` — ADR contract #2 keeps `invalidPackageName`
-inline core (three core files import it). The leak `src/container-runner.test.ts`
+inline core (three core files import it); and `container/agent-runner/src/well-formed.ts{,.test.ts}`
+— a generic UTF-16/JSON util (zero TaskFlow refs) that core `mcp-tools/scheduling.ts` imports
+(it post-dates the v2.0.54 baseline but is generic-core, like phone/dm-routing). The leak `src/container-runner.test.ts`
 (core SEAM) -> `modules/taskflow/container-contributions.js` was fixed by moving the
 4 TaskFlow env-arg describe blocks into the overlay's `container-contributions.test.ts`.
 
@@ -181,9 +183,10 @@ no-op.
 
 ## Open items
 - **Container-side split is incomplete on this branch.** A pristine-core *container*
-  `tsc --noEmit` (overlay deleted) does NOT pass: 4 core SEAM files still import
+  `tsc --noEmit` (overlay deleted) does NOT pass: 3 core SEAM files still import
   overlay paths — `index.ts`->`./poll-loop.js` (whole-file overlay) + `./mcp-tools/memory.js`;
-  `mcp-tools/core.ts`->`../current-batch.js` (whole-file overlay); `mcp-tools/scheduling.ts`->`../well-formed.js`.
+  `mcp-tools/core.ts`->`../current-batch.js` (whole-file overlay). (The 4th, `scheduling.ts`->`well-formed.js`,
+  was a COPY-SET MISCLASSIFICATION — well-formed.ts is generic-core, now removed from the copy-set.)
   The whole-file overlays of upstream files (`poll-loop.ts`, `current-batch.ts`) need a
   pristine-upstream baseline kept in core that the installer overwrites; the fork-new
   leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`

@@ -171,8 +171,6 @@ container/agent-runner/src/taskflow-engine.add-subtask-due-date.test.ts
 container/agent-runner/src/taskflow-engine.test.ts
 container/agent-runner/src/taskflow-engine.ts
 container/agent-runner/src/tz-util.ts
-container/agent-runner/src/well-formed.test.ts
-container/agent-runner/src/well-formed.ts
 src/backfill-container-configs.test.ts
 src/backfill-taskflow-destinations.test.ts
 src/backfill-taskflow-destinations.ts
