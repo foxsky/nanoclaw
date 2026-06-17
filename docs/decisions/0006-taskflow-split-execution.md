@@ -133,6 +133,16 @@ block removed by `274718a9`; reproduced here so it is not history-only:
 **`src/migrate-v2-steps-register.ts`** (host, v1→v2 migration) — 1 line:
 - `import './modules/taskflow/migrate-v2-main-control.js';`
 
+**`container/agent-runner/src/extensions-register.ts`** (container main process) — 1 line:
+- `import './memory-boot.js';`
+
+Decouples the container ENTRY (`index.ts`, an upstream file) from the fork memory
+feature: a core extension registry (`extensions.ts`: `registerBootStep` /
+`registerSystemPromptAddendum`, drained by index.ts) replaces index.ts's direct
+`mcp-tools/memory.js` import. The overlay `memory-boot.ts` registers the prune +
+recall; pristine core registers nothing (no-op, upstream behaviour). Mirrors the
+`providers/index.js` side-effect-import pattern index.ts already uses.
+
 This registers the `is_main=1` → `is_main_control=1` carry-over as a generic
 migrate-v2 post-seed step (contract: `src/migrate-v2-steps.ts`). It replaces the
 former direct overlay coupling in `setup/migrate-v2/db.ts` (the production-core
@@ -183,10 +193,14 @@ no-op.
 
 ## Open items
 - **Container-side split is incomplete on this branch.** A pristine-core *container*
-  `tsc --noEmit` (overlay deleted) does NOT pass: 3 core SEAM files still import
-  overlay paths — `index.ts`->`./poll-loop.js` (whole-file overlay) + `./mcp-tools/memory.js`;
-  `mcp-tools/core.ts`->`../current-batch.js` (whole-file overlay). (The 4th, `scheduling.ts`->`well-formed.js`,
-  was a COPY-SET MISCLASSIFICATION — well-formed.ts is generic-core, now removed from the copy-set.)
+  `tsc --noEmit` (overlay deleted) does NOT pass: 2 core SEAM files import overlay
+  paths — `index.ts`->`./poll-loop.js` and `mcp-tools/core.ts`->`../current-batch.js`. BOTH are
+  UPSTREAM-shaped imports (runPollLoop + getCurrentInReplyTo exist in upstream 8d57bdfa) of
+  whole-file overlays, i.e. the container is overlay-inclusive BY DESIGN (poll-loop IS the turn
+  runtime). This is the accepted final state, not a TODO. (Two earlier leaks were resolved:
+  `scheduling.ts`->`well-formed.js` was a copy-set misclassification (well-formed.ts is generic-core,
+  removed from the copy-set); `index.ts`->`mcp-tools/memory.js` was a genuine fork-feature boot in the
+  upstream entry, DECOUPLED via the container extension registry — see below.)
   The whole-file overlays of upstream files (`poll-loop.ts`, `current-batch.ts`) need a
   pristine-upstream baseline kept in core that the installer overwrites; the fork-new
   leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`

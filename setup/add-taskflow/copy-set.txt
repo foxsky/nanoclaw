@@ -270,3 +270,7 @@ src/taskflow-mount.ts
 # overlays. (Added by the review: they were core-path test leaks importing the overlay.)
 container/agent-runner/src/integration.test.ts
 container/agent-runner/src/poll-loop.test.ts
+
+# Container boot-extension overlay: registers the board-memory prune + recall
+# addendum into the entry extension registry (index.ts no longer imports memory).
+container/agent-runner/src/memory-boot.ts

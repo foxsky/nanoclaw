@@ -27,10 +27,12 @@ import { fileURLToPath } from 'url';
 
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
-import { buildMemoryRecallAddendum, pruneBoardMemory } from './mcp-tools/memory.js';
-// Providers barrel — each enabled provider self-registers on import.
-// Provider skills append imports to providers/index.ts.
+import { collectSystemPromptAddenda, runBootSteps } from './extensions.js';
+// Extension barrels — each registers on import (side-effect). Providers
+// self-register here; the /add-taskflow installer appends the board-memory boot
+// hooks to extensions-register.ts. Pristine core registers nothing.
 import './providers/index.js';
+import './extensions-register.js';
 import { createProvider, type ProviderName } from './providers/factory.js';
 import { runPollLoop } from './poll-loop.js';
 
@@ -52,13 +54,16 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  // Apply the board's forgetting policy (opt-in via env; no-op otherwise) BEFORE recall so the
-  // addendum reflects the pruned set. Best-effort — never aborts boot.
-  pruneBoardMemory();
-  // Identity + destinations, plus a once-per-session auto-recall of this board's recent
-  // memories (empty for non-board groups / fresh boards). Built once here so it stays stable
-  // for the container's life — prompt-cache safe, unlike a per-turn preamble.
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined) + buildMemoryRecallAddendum();
+  // Boot-step extensions (overlay-registered, no-op in pristine core). The
+  // TaskFlow overlay registers the board's forgetting-policy prune here — run
+  // BEFORE the prompt is built so any recall addendum reflects the pruned set.
+  // Best-effort: a throwing step never aborts boot.
+  runBootSteps();
+  // Identity + destinations, plus any system-prompt addenda the overlay
+  // contributes (e.g. once-per-session board-memory recall — empty in pristine
+  // core / non-board groups). Built once here so it stays stable for the
+  // container's life — prompt-cache safe, unlike a per-turn preamble.
+  const instructions = buildSystemPromptAddendum(config.assistantName || undefined) + collectSystemPromptAddenda();
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];

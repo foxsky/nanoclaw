@@ -86,6 +86,13 @@ MIGRATE_BARREL="src/migrate-v2-steps-register.ts"
 MIGRATE_IMPORTS=(
   "import './modules/taskflow/migrate-v2-main-control.js';"
 )
+# container boot-extension barrel (main agent-runner process) — 1 import.
+# Wires the board-memory prune + recall addendum into the entry's extension
+# registry so index.ts (an upstream file) stays free of the fork memory import.
+EXT_BARREL="container/agent-runner/src/extensions-register.ts"
+EXT_IMPORTS=(
+  "import './memory-boot.js';"
+)
 
 # Append a literal import line to a barrel only if absent (grep -q guard).
 append_if_missing() {
@@ -106,6 +113,9 @@ barrels_registered() {
   done
   for line in "${MIGRATE_IMPORTS[@]}"; do
     grep -qF "$line" "$MIGRATE_BARREL" 2>/dev/null || return 1
+  done
+  for line in "${EXT_IMPORTS[@]}"; do
+    grep -qF "$line" "$EXT_BARREL" 2>/dev/null || return 1
   done
   return 0
 }
@@ -154,6 +164,7 @@ if need_install; then
   for line in "${MODULES_IMPORTS[@]}"; do append_if_missing "$MODULES_BARREL" "$line"; done
   for line in "${MCP_IMPORTS[@]}";     do append_if_missing "$MCP_BARREL" "$line"; done
   for line in "${MIGRATE_IMPORTS[@]}"; do append_if_missing "$MIGRATE_BARREL" "$line"; done
+  for line in "${EXT_IMPORTS[@]}";     do append_if_missing "$EXT_BARREL" "$line"; done
 
   # d. DEPS. The overlay is source-only — neither package.json normally changes.
   #    Run installs only when a real change is detected (respect the lockfile).

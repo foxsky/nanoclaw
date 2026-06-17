@@ -20,10 +20,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COPY_SET="$ROOT/setup/add-taskflow/copy-set.txt"
 
-# Documented, accepted container seams (ADR 0006 "Open items"). Keep in sync:
-# container index.ts -> poll-loop.js (turn runtime) + mcp-tools/memory.js
-# (memory-feature boot); mcp-tools/core.ts -> ../current-batch.js.
-ALLOWED_SEAMS='poll-loop\.js|mcp-tools/memory\.js|current-batch\.js'
+# Documented, accepted container seams (ADR 0006 "Open items"). Keep in sync.
+# Both are UPSTREAM-shaped imports of whole-file overlays (runPollLoop and
+# getCurrentInReplyTo exist in upstream), so the container is overlay-inclusive
+# by design: container index.ts -> ./poll-loop.js (turn runtime);
+# mcp-tools/core.ts -> ../current-batch.js. (memory.js was decoupled via the
+# extension registry — it is no longer a core->overlay import.)
+ALLOWED_SEAMS='poll-loop\.js|current-batch\.js'
 
 [ -f "$COPY_SET" ] || { echo "FAIL: copy-set not found: $COPY_SET"; exit 1; }
 
