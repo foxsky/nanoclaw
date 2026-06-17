@@ -63,4 +63,32 @@ if [ -n "$bad" ]; then
   exit 1
 fi
 
-echo "OK: split boundary intact — pristine-core host build green; container core->overlay imports limited to the documented seams."
+# 3. setup/ steps run as `tsx` SUBPROCESSES — `pnpm run build` never compiles
+#    them, so a core setup step importing an overlay file (e.g. migrate-v2
+#    groups.ts/destinations.ts -> modules/taskflow/*) slips past arm 1. Assert no
+#    surviving setup/ file imports a path that IS in the copy-set. (Membership,
+#    not filesystem existence — a missing channel file like telegram-pairing.js,
+#    absent because that channel isn't installed, is NOT an overlay leak.)
+declare -A IN_COPYSET=()
+while IFS= read -r raw; do
+  p="${raw%%#*}"; p="$(printf '%s' "$p" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
+  [ -z "$p" ] && continue
+  IN_COPYSET["$p"]=1
+done < "$COPY_SET"
+setup_bad=""
+while IFS= read -r f; do
+  rel="$(printf '%s' "$f" | sed "s#^$WT/##")"
+  while IFS= read -r spec; do
+    case "$spec" in *.js) ;; *) continue ;; esac
+    tgt="$(realpath -m --relative-to="$WT" "$WT/$(dirname "$rel")/$spec")"
+    tgt="${tgt%.js}.ts"
+    [ -n "${IN_COPYSET[$tgt]:-}" ] && setup_bad+="$rel -> $spec (copy-set overlay)"$'\n'
+  done < <(grep -oE "(from|import)[[:space:]]+'(\.[^']+)'" "$f" 2>/dev/null | grep -oE "'\.[^']+'" | tr -d "'")
+done < <(find "$WT/setup" -name '*.ts' 2>/dev/null)
+if [ -n "$setup_bad" ]; then
+  echo "FAIL: a setup/ step imports an overlay (copy-set) path — core->overlay leak the build-only check misses:"
+  printf '%s' "$setup_bad"
+  exit 1
+fi
+
+echo "OK: split boundary intact — pristine-core host build green; container + setup core->overlay imports limited to the documented seams."

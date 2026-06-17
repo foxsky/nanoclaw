@@ -274,3 +274,15 @@ container/agent-runner/src/poll-loop.test.ts
 # Container boot-extension overlay: registers the board-memory prune + recall
 # addendum into the entry extension registry (index.ts no longer imports memory).
 container/agent-runner/src/memory-boot.ts
+
+# migrate-v2 TaskFlow steps (v1->v2 migration). These run as `tsx` subprocesses
+# (not compiled by `pnpm run build`), so their core->overlay imports slipped past
+# the build-only boundary check until check-split-boundary.sh grew a setup/ arm.
+#   - destinations.ts: fork-only, entirely TaskFlow (taskflow-mount + backfill-*).
+#   - groups.ts: WHOLE-FILE overlay of an upstream file (fork rewrote it to carry
+#     F3 model + F4 persona + migrate the board CLAUDE.md) — like poll-loop, the
+#     pristine baseline is the upstream version the installer overwrites.
+#   - step-integration.test.ts: fork-only, exercises both of the above.
+setup/migrate-v2/destinations.ts
+setup/migrate-v2/groups.ts
+setup/migrate-v2/step-integration.test.ts
