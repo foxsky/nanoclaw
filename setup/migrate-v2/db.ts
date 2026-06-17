@@ -26,16 +26,12 @@ import {
   getMessagingGroupByPlatform,
   updateMessagingGroup,
 } from '../../src/db/messaging-groups.js';
-import {
-  getMainControlMessagingGroup,
-  setMainControlMessagingGroup,
-} from '../../src/modules/taskflow/messaging-groups-main-control.js';
 import { runMigrations } from '../../src/db/migrations/index.js';
-// Fork-coupled: this migrate-v2 path writes messaging_groups.is_main_control
-// (v1 is_main → v2 carry-over). The column is added by the TaskFlow overlay
-// migration, which self-registers via this side-effect import — without it
-// runMigrations() below would not create the column.
-import '../../src/modules/taskflow/migrations-register.js';
+import { runMigrateV2Steps, type MigratedGroup, type SkippedGroup } from '../../src/migrate-v2-steps.js';
+// Install-overlay append point: importing this runs any registered overlay's
+// post-seed step registration (e.g. the TaskFlow is_main_control carry-over).
+// Empty in pristine core.
+import '../../src/migrate-v2-steps-register.js';
 import { readEnvFile } from '../../src/env.js';
 import { buildDiscordResolver, type DiscordResolver } from './discord-resolver.js';
 import {
@@ -72,9 +68,9 @@ async function main(): Promise<void> {
   const v1Db = new Database(v1DbPath, { readonly: true, fileMustExist: true });
 
   // v1 schema varies — channel_name was a late addition. Query only the
-  // columns we know exist in all v1 installs. ORDER BY rowid gives a
-  // stable iteration order so the "first" v1 is_main=1 row picked below
-  // is deterministic across reruns.
+  // columns we know exist in all v1 installs. ORDER BY rowid gives a stable
+  // iteration order so post-seed steps that pick "the first" matching row are
+  // deterministic across reruns.
   const v1Groups = v1Db
     .prepare('SELECT jid, name, folder, trigger_pattern, requires_trigger, is_main FROM registered_groups ORDER BY rowid')
     .all() as V1Group[];
@@ -95,26 +91,13 @@ async function main(): Promise<void> {
   let reused = 0;
   let skipped = 0;
   const errors: string[] = [];
-  // Track v1 is_main=1 rows that were excluded from mainCandidates by a
-  // mid-loop skip (Discord resolver failure, JID parse failure, mid-loop
-  // exception). Without this, an excluded main row would silently fall
-  // into the "no v1 is_main=1 row" WARN branch and point the operator at
-  // the wrong remediation (designate manually) instead of fixing the
-  // underlying cause (e.g., refresh DISCORD_BOT_TOKEN, then re-run).
-  const skippedMainRows: string[] = [];
-
-  // Track v1's is_main=1 row(s) so we can carry over to v2's
-  // `messaging_groups.is_main_control` after the loop. v1 didn't enforce a
-  // singleton — multiple rows could legally have is_main=1 — but v2's
-  // partial unique index allows exactly one. Pick the first one
-  // deterministically (input order from registered_groups) and warn on
-  // anything extra. Without this carry-over, the main-control privileged
-  // tools (provision_root_board, add_destination, send_otp) fail-closed
-  // at src/modules/taskflow/permission.ts:57 from every session.
-  // create_group and provision_child_board still work from TaskFlow-board
-  // agents (they have a board-based auth path) but the operator can't
-  // provision the first root board — a blocker for post-cutover bootstrap.
-  const mainCandidates: { folder: string; mgId: string }[] = [];
+  // Generic seed-outcome context passed to the post-seed step registry
+  // (src/migrate-v2-steps.ts). Core records every created/reused group and
+  // every skipped row (with its v1 is_main flag) so an install-overlay step —
+  // e.g. the TaskFlow is_main_control carry-over — can interpret them without
+  // any fork logic living here. Pristine core registers zero steps.
+  const ctxMigrated: MigratedGroup[] = [];
+  const ctxSkipped: SkippedGroup[] = [];
 
   // v1 stored Discord groups as `dc:<channelId>` with no guild/DM signal.
   // v2 needs either `discord:<guildId>:<channelId>` (guild) or
@@ -145,7 +128,7 @@ async function main(): Promise<void> {
     if (!parsed) {
       skipped++;
       errors.push(`Could not parse JID: ${g.jid}`);
-      if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): JID parse failure`);
+      ctxSkipped.push({ folder: g.folder, jid: g.jid, reason: 'JID parse failure', v1IsMain: g.is_main === 1 });
       continue;
     }
 
@@ -160,7 +143,7 @@ async function main(): Promise<void> {
           : 'not found in any guild the bot can see — re-add the bot to that server and re-run, or rewire after migration';
         skipped++;
         errors.push(`Discord channel ${parsed.id} (${g.folder}): ${why}`);
-        if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): ${why}`);
+        ctxSkipped.push({ folder: g.folder, jid: g.jid, reason: why, v1IsMain: g.is_main === 1 });
         continue;
       }
       platformId = resolved;
@@ -236,62 +219,23 @@ async function main(): Promise<void> {
         reused++;
       }
 
-      // Record main candidate only AFTER wiring is confirmed (created or
-      // reused). The is_main_control gate (permission.ts:lookupGateRow)
-      // JOINs through messaging_group_agents, so promoting a messaging
-      // group with no wiring row yields main_promoted=1 but zero
-      // effective authorization — internally inconsistent migration
-      // output. Pushing post-wiring keeps the count honest.
-      if (g.is_main === 1) {
-        mainCandidates.push({ folder: g.folder, mgId: mg.id });
-      }
+      // Record AFTER wiring is confirmed (created or reused). Any group that
+      // errors mid-create lands in ctxSkipped instead, so a post-seed step
+      // (e.g. the TaskFlow is_main_control carry-over) never promotes a group
+      // with no wiring row.
+      ctxMigrated.push({ folder: g.folder, messagingGroupId: mg.id, v1IsMain: g.is_main === 1 });
     } catch (err) {
       skipped++;
       const reason = err instanceof Error ? err.message : String(err);
       errors.push(`${g.folder}: ${reason}`);
-      if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): ${reason}`);
+      ctxSkipped.push({ folder: g.folder, jid: g.jid, reason, v1IsMain: g.is_main === 1 });
     }
   }
 
-  // Carry over v1's is_main=1 → v2's is_main_control=1. Done after the
-  // create/reuse loop so any "main" row that errored mid-create is excluded
-  // automatically (mgId wouldn't have been recorded — see post-wiring push).
-  //
-  // Rerun policy: if a v2 main already exists (operator-set via ncl or
-  // a prior migration), preserve it. The migration is "first-write-wins"
-  // for is_main_control; the operator's choice always beats v1's mapping
-  // on a re-execution. This matches migrate-v2.sh's "safe to re-run"
-  // contract — re-running shouldn't clobber post-migration admin work.
-  let mainPromoted = 0;
-  const existingMain = getMainControlMessagingGroup();
-  if (existingMain) {
-    console.log(
-      `INFO:is_main_control already set on "${existingMain.name ?? existingMain.id}" (preserving operator/prior choice)`,
-    );
-  } else if (mainCandidates.length > 0) {
-    const pick = mainCandidates[0];
-    setMainControlMessagingGroup(pick.mgId);
-    mainPromoted = 1;
-    if (mainCandidates.length > 1) {
-      console.log(
-        `WARN:multiple v1 is_main=1 rows (${mainCandidates.length}); promoted "${pick.folder}", ignored ${mainCandidates
-          .slice(1)
-          .map((c) => c.folder)
-          .join(', ')}`,
-      );
-    }
-  } else if (skippedMainRows.length > 0) {
-    // v1 HAD an is_main=1 row but it was excluded mid-loop (Discord
-    // resolver failure, JID parse failure, exception during seed). Point
-    // the operator at the underlying cause instead of generic "designate
-    // manually" remediation — fixing the skip is usually cheaper than
-    // re-picking the main from scratch.
-    console.log(
-      `WARN:v1 had ${skippedMainRows.length} is_main=1 row(s) but all were excluded during seed: ${skippedMainRows.join('; ')}. Fix the underlying cause (e.g. refresh DISCORD_BOT_TOKEN) and re-run, or designate manually via /migrate-from-v1.`,
-    );
-  } else {
-    console.log('WARN:no v1 registered_groups.is_main=1 — main-control privileged tools (provision_root_board, add_destination, send_otp) will be unauthorized until /migrate-from-v1 designates a main control group');
-  }
+  // Run install-overlay post-seed steps (empty in pristine core). The TaskFlow
+  // overlay registers the is_main=1 → is_main_control=1 carry-over here. Steps
+  // may return `key=value` fragments to append to the OK: summary line.
+  const stepFields = await runMigrateV2Steps({ migrated: ctxMigrated, skipped: ctxSkipped });
 
   v2Db.close();
 
@@ -305,9 +249,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(
-    `OK:groups=${v1Groups.length},created=${created},reused=${reused},skipped=${skipped},main_promoted=${mainPromoted}`,
-  );
+  const okFields = [
+    `groups=${v1Groups.length}`,
+    `created=${created}`,
+    `reused=${reused}`,
+    `skipped=${skipped}`,
+    ...stepFields,
+  ];
+  console.log(`OK:${okFields.join(',')}`);
   if (errors.length > 0) {
     for (const e of errors) console.log(`ERROR:${e}`);
   }

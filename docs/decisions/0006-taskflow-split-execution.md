@@ -130,6 +130,17 @@ block removed by `274718a9`; reproduced here so it is not history-only:
 - `import './dispatch-extensions.js';`
 - `import './emit-hooks.js';`
 
+**`src/migrate-v2-steps-register.ts`** (host, v1→v2 migration) — 1 line:
+- `import './modules/taskflow/migrate-v2-main-control.js';`
+
+This registers the `is_main=1` → `is_main_control=1` carry-over as a generic
+migrate-v2 post-seed step (contract: `src/migrate-v2-steps.ts`). It replaces the
+former direct overlay coupling in `setup/migrate-v2/db.ts` (the production-core
+leak the fan-out review flagged) — core `db.ts` now builds/runs pristine with zero
+TaskFlow modules and runs zero steps. Importing the overlay step also pulls in
+`migrations-register.js`, so the `is_main_control` column migration is registered
+before `runMigrations()` creates it.
+
 **`taskflow-api-board.js` is INTENTIONALLY NOT in the chat barrel** (preserve the
 SEC cross-board exclusion — its read tools belong to the FastAPI engine seam
 `taskflow-server-entry.ts` only).

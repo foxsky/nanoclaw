@@ -1122,9 +1122,9 @@ describe('unrouted-DM resolver hook', () => {
   });
 
   function drops() {
-    return getDb()
-      .prepare(`SELECT * FROM unregistered_senders WHERE reason = 'no_agent_wired'`)
-      .all() as Array<{ messaging_group_id: string }>;
+    return getDb().prepare(`SELECT * FROM unregistered_senders WHERE reason = 'no_agent_wired'`).all() as Array<{
+      messaging_group_id: string;
+    }>;
   }
 
   const okResolver = () => vi.fn((_mg: MessagingGroup, _event: InboundEvent) => Promise.resolve(true));
