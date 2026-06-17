@@ -201,11 +201,14 @@ no-op.
   `scheduling.ts`->`well-formed.js` was a copy-set misclassification (well-formed.ts is generic-core,
   removed from the copy-set); `index.ts`->`mcp-tools/memory.js` was a genuine fork-feature boot in the
   upstream entry, DECOUPLED via the container extension registry — see below.)
-  The whole-file overlays of upstream files (`poll-loop.ts`, `current-batch.ts`) need a
-  pristine-upstream baseline kept in core that the installer overwrites; the fork-new
-  leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`
-  `truncateChars`) need their core-consumed symbols moved behind a core stub. Tracked
-  as the remaining container decoupling (W2/W5 container leg).
+  Closing BOTH seams fully would require a pristine-upstream baseline of
+  `poll-loop.ts`/`current-batch.ts` kept in core that the installer overwrites — REJECTED:
+  poll-loop is a ~5300-line near-total fork rewrite (it IS the turn runtime), so a dual
+  baseline is high-cost / low-value and reopens the SEC surface. Accepted as the final
+  state. (The two fork-new leaves that WERE genuine couplings are resolved, not stubbed:
+  `memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory` — decoupled via the extension
+  registry above; `well-formed.ts` `truncateChars` — reclassified generic-core and removed
+  from the copy-set, so core consuming it is correct, not a leak.)
   (Update: the two core-path TEST leaks — `integration.test.ts`, `poll-loop.test.ts`,
   both whole-file overlays of upstream tests — are now in the copy-set = overlay, so the
   core test tree no longer carries TaskFlow suites; the SOURCE decoupling above remains.)
@@ -213,8 +216,15 @@ no-op.
   copy-set in a throwaway worktree and asserts pristine-core HOST build GREEN +
   container `tsc` unresolved-imports limited to the documented seams — catches the
   copy-set misclassification class (it would have failed on the well-formed.ts bug).
-  Still TODO: an install-then-test green gate + a `register*` registrant<->append-set
-  completeness check (the two-orphan mechanical check).
+- Append-completeness guardrail (DONE): `setup/add-taskflow/check-append-completeness.sh`
+  proves every copy-set registrant (top-level `register*()`) is REACHABLE — BFS over the
+  overlay's relative imports — from one of the installer's append seeds, and that no
+  append is dangling. Catches the "new overlay registrant added to the copy-set but its
+  installer append forgotten → ships copied-but-inert" class (e.g. SEC emit-hooks gate
+  shipping ungated). Append-sets are factored into the shared `append-sets.sh` so the
+  installer and the check read ONE source of truth. Falsified both directions (drop the
+  emit-hooks append → FAIL(B); add a bogus append → FAIL(A)).
+  Still TODO: an install-then-test green gate.
 - Contract 10 backfill: `registerBackfillStep` vs whole-file overlay (single consumer).
 - `016-user-roles-unique-indexes`: push upstream as generic hardening vs `module-*` rename.
 - `StartupContext` two-phase (`post-db`/`post-services`) — confirm no near-term hook needs a third.
