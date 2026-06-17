@@ -4,48 +4,50 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
-import { captureSessionMemories, precompactHookTimeoutSec } from '../memory-capture.js';
-import { openMemoryDbEnsuringDir } from '../memory-store.js';
-import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
-import { SECURITY_DENYLIST, PARITY_DENYLIST } from './security-denylist.js';
-import { containsLoneSurrogate, toWellFormedText, truncateChars, wellFormedToolResult } from '../well-formed.js';
-import type {
-  AgentProvider,
-  AgentQuery,
-  McpServerConfig,
-  ProviderEvent,
-  ProviderOptions,
-  QueryInput,
-} from './types.js';
+import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
 }
 
-// The tool denylist lives in ./security-denylist.ts as the single source of
-// truth: SECURITY_DENYLIST (the security boundary — every provider must enforce
-// it) plus PARITY_DENYLIST (v1-replay-shape / deferred-builtin preferences).
-// The union here is byte-identical (as a set) to the prior inline literal; the
-// preToolUseHook and query() disallowedTools wiring below keep checking it.
-export const SDK_DISALLOWED_TOOLS = [...SECURITY_DENYLIST, ...PARITY_DENYLIST];
-
-// Re-export the security subset so providers-branch code (opencode/codex) can
-// import the boundary from the same module it already imports claude constants.
-export { SECURITY_DENYLIST } from './security-denylist.js';
+// Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
+// don't fit our async message-passing model (they're designed for Claude
+// Code's interactive UI and would hang here).
+//
+// - CronCreate / CronDelete / CronList / ScheduleWakeup: we have durable
+//   scheduling via mcp__nanoclaw__schedule_task.
+// - AskUserQuestion: SDK returns a placeholder instead of blocking on a
+//   real answer — we have mcp__nanoclaw__ask_user_question that persists
+//   the question and blocks on the real reply.
+// - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
+//   Code UI affordances; in a headless container they'd appear stuck.
+const SDK_DISALLOWED_TOOLS = [
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'EnterWorktree',
+  'ExitWorktree',
+];
 
 // Tool allowlist for NanoClaw agent containers. MCP-tool entries are derived
 // at the call site from the registered `mcpServers` map so that any server
 // added via `add_mcp_server` (or wired in container.json directly) is
 // reachable to the agent — without this, the SDK's allowedTools filter
 // silently drops every MCP namespace not listed here.
-export const TOOL_ALLOWLIST = [
+const TOOL_ALLOWLIST = [
   'Bash',
   'Read',
   'Write',
   'Edit',
   'Glob',
   'Grep',
+  'WebSearch',
+  'WebFetch',
   'Task',
   'TaskOutput',
   'TaskStop',
@@ -53,6 +55,7 @@ export const TOOL_ALLOWLIST = [
   'TeamDelete',
   'SendMessage',
   'TodoWrite',
+  'ToolSearch',
   'Skill',
   'NotebookEdit',
 ];
@@ -60,32 +63,9 @@ export const TOOL_ALLOWLIST = [
 // MCP server names are sanitized by the SDK when forming tool prefixes:
 // any character outside [A-Za-z0-9_-] becomes '_'. Mirror that here so our
 // allowlist patterns match what the SDK actually exposes.
-export function mcpAllowPattern(serverName: string): string | null {
-  const sanitized = serverName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (sanitized === 'sqlite') return null;
-  return `mcp__${sanitized}__*`;
+function mcpAllowPattern(serverName: string): string {
+  return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
 }
-
-function isSdkVisibleMcpServer(serverName: string): boolean {
-  return mcpAllowPattern(serverName) !== null;
-}
-
-/**
- * The SDK `allowedTools` for a query. RC5-ext C4c: a CONFINED-external turn gets
- * NO built-in tools (Bash/Read/Write/Edit/Glob/Grep/… — none of which the
- * nanoclaw C7 MCP gate can see, so they would be an unguarded fs/bash
- * exfiltration path) and ONLY the nanoclaw MCP server (C7 then narrows it to the
- * external-safe whitelist) — never any other installed MCP server. A normal turn
- * gets the full built-in allowlist plus every visible MCP server.
- */
-export function computeAllowedTools(confined: boolean, visibleMcpServerNames: string[]): string[] {
-  const mcpPatterns = visibleMcpServerNames.map(mcpAllowPattern).filter((tool): tool is string => tool !== null);
-  return confined
-    ? [mcpAllowPattern('nanoclaw')].filter((tool): tool is string => tool !== null)
-    : [...TOOL_ALLOWLIST, ...mcpPatterns];
-}
-
-export const SDK_SETTING_SOURCES: [] = [];
 
 interface SDKUserMessage {
   type: 'user';
@@ -105,10 +85,7 @@ class MessageStream {
   push(text: string): void {
     this.queue.push({
       type: 'user',
-      // Sanitize here so EVERY user message — the initial prompt AND every
-      // follow-up push (poll-loop.ts query.push) — is well-formed before the
-      // SDK serializes it into the request body.
-      message: { role: 'user', content: toWellFormedText(text) },
+      message: { role: 'user', content: text },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -148,15 +125,10 @@ function parseTranscript(content: string): ParsedMessage[] {
     try {
       const entry = JSON.parse(line);
       if (entry.type === 'user' && entry.message?.content) {
-        const text =
-          typeof entry.message.content === 'string'
-            ? entry.message.content
-            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+        const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content
-          .filter((c: { type: string }) => c.type === 'text')
-          .map((c: { text: string }) => c.text);
+        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
@@ -169,17 +141,11 @@ function parseTranscript(content: string): ParsedMessage[] {
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
   const now = new Date();
-  const dateStr = now.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
+  const dateStr = now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
   const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
-    const content = msg.content.length > 2000 ? truncateChars(msg.content, 2000) + '...' : msg.content;
+    const content = msg.content.length > 2000 ? msg.content.slice(0, 2000) + '...' : msg.content;
     lines.push(`**${sender}**: ${content}`, '');
   }
   return lines.join('\n');
@@ -191,7 +157,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
  * script. Defense-in-depth: if SDK_DISALLOWED_TOOLS slips through somehow,
  * block the call here instead of letting the agent hang.
  */
-export const preToolUseHook: HookCallback = async (input) => {
+const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
   if (SDK_DISALLOWED_TOOLS.includes(toolName)) {
@@ -212,37 +178,12 @@ export const preToolUseHook: HookCallback = async (input) => {
   return { continue: true };
 };
 
-/**
- * Clear in-flight tool on PostToolUse / PostToolUseFailure, and sanitize lone
- * UTF-16 surrogates out of the tool OUTPUT before it reaches the model.
- *
- * This is the chokepoint the in-container `mcp-tools/server.ts` wrapper can't
- * reach: PostToolUse fires for EVERY tool the SDK runs — built-in tools (Read,
- * Bash output of a file with malformed UTF-8) AND external/config-wired MCP
- * servers (whose results the SDK transports directly). A lone surrogate in any
- * of those would otherwise be recorded as a `tool_result` and make the next
- * request body invalid JSON (400 "no low surrogate in string"). We only rewrite
- * when a lone surrogate is actually present, so well-formed output is untouched.
- *
- * Residual: only the SUCCESS path (`tool_response`) is rewritable here —
- * PostToolUseFailure carries an `error` string with no `updatedToolOutput`
- * field. Our own in-container MCP tools sanitize their thrown message at the
- * dispatch boundary (`wellFormedError` in mcp-tools/server.ts), so the residual
- * is narrowed to a built-in/external tool that FAILS with malformed error text
- * (those run in the SDK process — unreachable from here; hard SDK limit).
- */
-export const postToolUseHook: HookCallback = async (input) => {
+/** Clear in-flight tool on PostToolUse / PostToolUseFailure. */
+const postToolUseHook: HookCallback = async () => {
   try {
     clearContainerToolInFlight();
   } catch (err) {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const resp = (input as { tool_response?: unknown }).tool_response;
-  if (resp !== undefined && containsLoneSurrogate(resp)) {
-    return {
-      continue: true,
-      hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: wellFormedToolResult(resp) },
-    } as unknown as ReturnType<HookCallback>;
   }
   return { continue: true };
 };
@@ -257,10 +198,9 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       return {};
     }
 
-    let messages: ParsedMessage[] = [];
     try {
       const content = fs.readFileSync(transcriptPath, 'utf-8');
-      messages = parseTranscript(content);
+      const messages = parseTranscript(content);
       if (messages.length === 0) return {};
 
       // Try to get summary from sessions index
@@ -269,48 +209,23 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       if (fs.existsSync(indexPath)) {
         try {
           const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-          summary = index.entries?.find(
-            (e: { sessionId: string; summary?: string }) => e.sessionId === sessionId,
-          )?.summary;
+          summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)?.summary;
         } catch {
           /* ignore */
         }
       }
 
       const name = summary
-        ? summary
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '')
-            .slice(0, 50)
+        ? summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
         : `conversation-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
 
       const conversationsDir = '/workspace/agent/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
       const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
-      fs.writeFileSync(
-        path.join(conversationsDir, filename),
-        formatTranscriptMarkdown(messages, summary, assistantName),
-      );
+      fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
       log(`Archived conversation to ${filename}`);
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // P2 auto-capture: distil durable facts into the board's memory. Best-effort and
-    // independent of archiving — a slow/failed extraction must never break compaction
-    // (extractMemories is timeout-bounded and fails soft).
-    try {
-      const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID?.trim() || null;
-      const captured = await captureSessionMemories({
-        messages,
-        boardId,
-        sessionId: sessionId ?? 'unknown',
-        openDb: () => openMemoryDbEnsuringDir(),
-      });
-      if (captured) log(`Captured ${captured} memories`);
-    } catch (err) {
-      log(`Memory capture failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return {};
   };
@@ -337,7 +252,6 @@ const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not fou
 
 export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = true;
-  readonly supportsConfinedExternal = true;
 
   private assistantName?: string;
   private mcpServers: Record<string, McpServerConfig>;
@@ -365,47 +279,22 @@ export class ClaudeProvider implements AgentProvider {
 
   query(input: QueryInput): AgentQuery {
     const stream = new MessageStream();
-    stream.push(input.prompt); // MessageStream.push() strips lone surrogates
+    stream.push(input.prompt);
 
-    const instructions = input.systemContext?.instructions
-      ? toWellFormedText(input.systemContext.instructions) // appended to systemPrompt, not via push()
-      : undefined;
-    const visibleMcpServers = Object.fromEntries(
-      Object.entries(this.mcpServers).filter(([serverName]) => isSdkVisibleMcpServer(serverName)),
-    );
-
-    // RC5-ext C4c — confined-external mode. An authenticated external participant
-    // is driving this turn, so the agent must NOT have any built-in fs/bash tools
-    // (Read/Bash/Glob/… are NOT gated by the nanoclaw C7 MCP gate, so they would
-    // be an unguarded exfiltration path over board-private files) and must NOT see
-    // board `additionalDirectories`. Exposed tools = ONLY the nanoclaw MCP server
-    // (C7 then narrows to the external-safe whitelist). The caller pairs this with
-    // a neutral cwd (no board CLAUDE.md) and a minimal external-only systemContext.
-    const confined = input.confinedExternal === true;
-    // Availability is enforced by `disallowedTools` (SDK_DISALLOWED_TOOLS already
-    // denies Bash/Read/Write/Edit/Glob/Grep/LS/WebFetch/… + ListMcpResources/
-    // ReadMcpResource for EVERY turn) and by RESTRICTING the visible MCP servers —
-    // NOT by `allowedTools`, which under bypassPermissions only auto-approves. In
-    // confined mode expose ONLY the nanoclaw MCP server (so an external can't reach
-    // any board-installed MCP server's tools); the C7 gate then narrows nanoclaw to
-    // the external-safe whitelist. `allowedTools`/`additionalDirectories:[]` are
-    // kept as defense-in-depth.
-    const confinedMcpServers = confined
-      ? Object.fromEntries(Object.entries(visibleMcpServers).filter(([name]) => name === 'nanoclaw'))
-      : visibleMcpServers;
-    const allowedTools = computeAllowedTools(confined, Object.keys(confinedMcpServers));
+    const instructions = input.systemContext?.instructions;
 
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
         cwd: input.cwd,
-        additionalDirectories: confined ? [] : this.additionalDirectories,
+        additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
-        systemPrompt: instructions
-          ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions }
-          : undefined,
-        allowedTools,
+        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
+        allowedTools: [
+          ...TOOL_ALLOWLIST,
+          ...Object.keys(this.mcpServers).map(mcpAllowPattern),
+        ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
         model: this.model,
@@ -413,24 +302,18 @@ export class ClaudeProvider implements AgentProvider {
         effort: this.effort as any,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        settingSources: SDK_SETTING_SOURCES,
-        mcpServers: confinedMcpServers,
+        settingSources: ['project', 'user'],
+        mcpServers: this.mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
-          // Timeout (s) is DERIVED from the extraction budget (+ buffer) so capture's own
-          // AbortSignal fires first and writes cleanly before the SDK could kill the hook —
-          // raising NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS for a slow local model lifts this too.
-          PreCompact: [{ timeout: precompactHookTimeoutSec(), hooks: [createPreCompactHook(this.assistantName)] }],
+          PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },
     });
 
     let aborted = false;
-
-    // Opt-in tool_use capture for the v1↔v2 comparator harness; off in prod.
-    const toolCapturePath = process.env.NANOCLAW_TOOL_USES_PATH;
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
@@ -438,22 +321,13 @@ export class ClaudeProvider implements AgentProvider {
         if (aborted) return;
         messageCount++;
 
-        if (toolCapturePath) {
-          try {
-            const events = extractToolEvents(message);
-            if (events.length > 0) appendToolEvents(toolCapturePath, events);
-          } catch (err) {
-            log(`tool-capture: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'result') {
-          const text = 'result' in message ? ((message as { result?: string }).result ?? null) : null;
+          const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
           yield { type: 'result', text };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };

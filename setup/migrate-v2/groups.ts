@@ -2,7 +2,7 @@
  * migrate-v2 step: groups
  *
  * Copy v1 group folders into v2.
- *   - v1 CLAUDE.md → migrated v2 CLAUDE.local.md (v2 composes CLAUDE.md at spawn)
+ *   - v1 CLAUDE.md → v2 CLAUDE.local.md (v2 composes CLAUDE.md at spawn)
  *   - v1 container_config → .v1-container-config.json sidecar
  *   - All other files copied (no overwrite)
  *   - Also copies global/ if it exists
@@ -16,12 +16,7 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
-import { migrateBoardClaudeMd } from '../../src/modules/taskflow/migrate-board-claudemd.js';
-import { personaFromTrigger, readV1AgentModel } from './shared.js';
-
 const SKIP_NAMES = new Set(['CLAUDE.md', 'logs', '.git', '.DS_Store', 'node_modules']);
-const LEGACY_PROMPT_PATTERN =
-  /\btaskflow_(query|report|move|reassign|update|admin|create|dependency|hierarchy|undo)\b|mcp__sqlite__|target_chat_jid|target_group_jid|schedule_type|schedule_value/;
 
 /**
  * Copy a directory tree, skipping SKIP_NAMES. Never overwrites existing files.
@@ -69,87 +64,40 @@ function main(): void {
   const v2GroupsDir = path.join(process.cwd(), 'groups');
 
   if (!fs.existsSync(v1GroupsDir)) {
-    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no v1 groups/ directory');
-    process.exit(1);
+    process.exit(0);
   }
 
   // Get all folders from v1 DB to know which groups are registered
   const v1DbPath = path.join(v1Path, 'store', 'messages.db');
   const registeredFolders = new Set<string>();
-  let configsWritten = 0;
   if (fs.existsSync(v1DbPath)) {
     const v1Db = new Database(v1DbPath, { readonly: true, fileMustExist: true });
     const rows = v1Db
-      .prepare('SELECT folder, container_config, trigger_pattern FROM registered_groups')
-      .all() as Array<{ folder: string; container_config: string | null; trigger_pattern: string | null }>;
-    const groupMeta = new Map<string, { config: string | null; trigger: string | null }>();
+      .prepare('SELECT folder, container_config FROM registered_groups')
+      .all() as Array<{ folder: string; container_config: string | null }>;
+    const containerConfigs = new Map<string, string | null>();
     for (const r of rows) {
       registeredFolders.add(r.folder);
-      groupMeta.set(r.folder, { config: r.container_config, trigger: r.trigger_pattern });
+      containerConfigs.set(r.folder, r.container_config);
     }
     v1Db.close();
 
-    // Write container.json carrying forward, for each registered group:
-    //   - v1 container_config (mounts/timeout — identical shape in v2),
-    //   - F4: assistantName = persona from trigger_pattern ('@Case' → 'Case'),
-    //   - F3: model = v1 per-agent ANTHROPIC_MODEL from the session settings.json.
-    // backfill-container-configs.ts imports all three into container_configs at
-    // first boot. v1 stored model/persona OUTSIDE container_config (settings.json
-    // / trigger_pattern), and v2 ignores settings.json (settingSources:[]), so
-    // without this carry a migrated board loses its model + presents under its
-    // display name instead of its persona.
-    for (const [folder, { config, trigger }] of groupMeta) {
+    // Write container.json from v1 container_config.
+    // The additionalMounts shape is identical between v1 and v2.
+    for (const [folder, config] of containerConfigs) {
+      if (!config) continue;
       const v2Folder = path.join(v2GroupsDir, folder);
       const containerJson = path.join(v2Folder, 'container.json');
-
-      // Base, in precedence order: an existing container.json (a prior/partial
-      // migration — merge into it so a re-run still adds F3/F4 keys), else the
-      // parsed v1 container_config, else {}. We only ADD missing assistantName/
-      // model below, so an operator's existing value is never clobbered.
-      let base: Record<string, unknown> = {};
-      const existed = fs.existsSync(containerJson);
-      if (existed) {
-        try {
-          base = JSON.parse(fs.readFileSync(containerJson, 'utf8')) as Record<string, unknown>;
-        } catch {
-          continue; // malformed operator file — leave it untouched
-        }
-      } else if (config) {
-        try {
-          base = JSON.parse(config) as Record<string, unknown>;
-        } catch {
-          // Unparseable config — preserve verbatim as a sidecar for the skill;
-          // still carry the (independent) model/persona into container.json below.
-          fs.mkdirSync(v2Folder, { recursive: true });
-          fs.writeFileSync(path.join(v2Folder, '.v1-container-config.json'), config);
-          base = {};
-        }
-      }
-
-      let changed = false;
-      if (base.assistantName === undefined) {
-        const persona = personaFromTrigger(trigger);
-        if (persona) {
-          base.assistantName = persona;
-          changed = true;
-        }
-      }
-      if (base.model === undefined) {
-        const model = readV1AgentModel(v1Path, folder);
-        if (model) {
-          base.model = model;
-          changed = true;
-        }
-      }
-
-      // Existing file: write only if we added something. Fresh file: write when
-      // there's anything to carry (config and/or persona/model).
-      const shouldWrite = existed ? changed : Object.keys(base).length > 0;
-      if (!shouldWrite) continue;
+      if (fs.existsSync(containerJson)) continue;
       fs.mkdirSync(v2Folder, { recursive: true });
-      fs.writeFileSync(containerJson, JSON.stringify(base, null, 2));
-      configsWritten++;
+      try {
+        const parsed = JSON.parse(config) as Record<string, unknown>;
+        fs.writeFileSync(containerJson, JSON.stringify(parsed, null, 2));
+      } catch {
+        // Unparseable config — write as sidecar for the skill to handle
+        fs.writeFileSync(path.join(v2Folder, '.v1-container-config.json'), config);
+      }
     }
   }
 
@@ -166,18 +114,12 @@ function main(): void {
 
     fs.mkdirSync(v2Folder, { recursive: true });
 
-    // CLAUDE.md → migrated CLAUDE.local.md. If a previous partial run copied
-    // raw v1 instructions, replace them; otherwise preserve an existing local
-    // file so reruns do not wipe operator edits.
+    // CLAUDE.md → CLAUDE.local.md
     const v1Claude = path.join(v1Folder, 'CLAUDE.md');
     const v2Local = path.join(v2Folder, 'CLAUDE.local.md');
-    if (fs.existsSync(v1Claude)) {
-      const migrated = migrateBoardClaudeMd(fs.readFileSync(v1Claude, 'utf8')).output;
-      const shouldWrite = !fs.existsSync(v2Local) || LEGACY_PROMPT_PATTERN.test(fs.readFileSync(v2Local, 'utf8'));
-      if (shouldWrite) {
-        fs.writeFileSync(v2Local, migrated);
-        claudesMigrated++;
-      }
+    if (fs.existsSync(v1Claude) && !fs.existsSync(v2Local)) {
+      fs.copyFileSync(v1Claude, v2Local);
+      claudesMigrated++;
     }
 
     // Copy everything else
@@ -185,7 +127,7 @@ function main(): void {
     foldersCopied++;
   }
 
-  console.log(`OK:folders=${foldersCopied},claudes=${claudesMigrated},files=${filesCopied},configs=${configsWritten}`);
+  console.log(`OK:folders=${foldersCopied},claudes=${claudesMigrated},files=${filesCopied}`);
 }
 
 main();
