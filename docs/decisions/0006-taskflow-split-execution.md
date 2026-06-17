@@ -192,6 +192,9 @@ no-op.
   leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`
   `truncateChars`) need their core-consumed symbols moved behind a core stub. Tracked
   as the remaining container decoupling (W2/W5 container leg).
+  (Update: the two core-path TEST leaks — `integration.test.ts`, `poll-loop.test.ts`,
+  both whole-file overlays of upstream tests — are now in the copy-set = overlay, so the
+  core test tree no longer carries TaskFlow suites; the SOURCE decoupling above remains.)
 - CI guardrail (DONE): `setup/add-taskflow/check-split-boundary.sh` deletes the
   copy-set in a throwaway worktree and asserts pristine-core HOST build GREEN +
   container `tsc` unresolved-imports limited to the documented seams — catches the

@@ -263,3 +263,10 @@ src/taskflow-embedding-sync.test.ts
 src/taskflow-embedding-sync.ts
 src/taskflow-mount.test.ts
 src/taskflow-mount.ts
+
+# Whole-file-overlay TESTS (upstream files the fork replaced with TaskFlow-specific
+# suites). Like current-batch.test.ts above: fork-owned, installer-copied, excluded
+# from the pristine-core test run. Companion of the poll-loop.ts / integration.test.ts
+# overlays. (Added by the review: they were core-path test leaks importing the overlay.)
+container/agent-runner/src/integration.test.ts
+container/agent-runner/src/poll-loop.test.ts
