@@ -192,10 +192,12 @@ no-op.
   leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`
   `truncateChars`) need their core-consumed symbols moved behind a core stub. Tracked
   as the remaining container decoupling (W2/W5 container leg).
-- An executable CI guardrail (check out pristine core, assert host build green; run
-  the installer, assert `pnpm test` + `bun test` green; enumerate top-level `register*`
-  registrants and assert each appears in the documented append-set) would catch drift +
-  the two orphan registrants mechanically.
+- CI guardrail (DONE): `setup/add-taskflow/check-split-boundary.sh` deletes the
+  copy-set in a throwaway worktree and asserts pristine-core HOST build GREEN +
+  container `tsc` unresolved-imports limited to the documented seams — catches the
+  copy-set misclassification class (it would have failed on the well-formed.ts bug).
+  Still TODO: an install-then-test green gate + a `register*` registrant<->append-set
+  completeness check (the two-orphan mechanical check).
 - Contract 10 backfill: `registerBackfillStep` vs whole-file overlay (single consumer).
 - `016-user-roles-unique-indexes`: push upstream as generic hardening vs `module-*` rename.
 - `StartupContext` two-phase (`post-db`/`post-services`) — confirm no near-term hook needs a third.

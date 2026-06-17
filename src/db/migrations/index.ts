@@ -30,6 +30,15 @@ export interface Migration {
 const registeredModuleMigrations: Migration[] = [];
 
 export function registerMigration(m: Migration): void {
+  // Name-keyed dup guard (consistent with the sibling registries:
+  // startup-registry, container-contributor-registry, migrate-v2-steps). A
+  // duplicate `name` — whether a double-register or a collision with a core
+  // migration — would otherwise silently never re-apply (apply-layer dedup is
+  // on `name`), so a second module choosing the same name would lose its
+  // migration with no error. Fail loud at registration instead.
+  if (registeredModuleMigrations.some((x) => x.name === m.name) || migrations.some((x) => x.name === m.name)) {
+    throw new Error(`migration "${m.name}" already registered`);
+  }
   registeredModuleMigrations.push(m);
 }
 
