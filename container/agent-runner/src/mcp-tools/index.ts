@@ -10,27 +10,6 @@ import './scheduling.js';
 import './interactive.js';
 import './agents.js';
 import './self-mod.js';
-import './send-otp.js';
-import './transcribe-audio.js';
-import './provision-root-board.js';
-import './provision-child-board.js';
-import './create-group.js';
-import './add-destination.js';
-import './taskflow-api-read.js';
-import './taskflow-api-mutate.js';
-import './taskflow-api-update.js';
-import './taskflow-api-notes.js';
-// taskflow-api-board.js is INTENTIONALLY NOT imported into the chat barrel: its tools read
-// board_id verbatim (no normalizeAgentIds) and rely on FastAPI-side owner auth, so exposing them
-// to chat is a cross-board escape. They are registered only by taskflow-server-entry.ts (FastAPI),
-// and additionally fail-closed on !getVerbatimIds() (see fastApiOnly in taskflow-api-board.ts).
-import './rename-board-person.js';
-import './taskflow-api-comment.js';
-import './memory.js';
-import './db/taskflow-db.js';
-import './db/web-chat-reply-transform.js';
-import './dispatch-extensions.js';
-import './emit-hooks.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {
