@@ -153,13 +153,46 @@ the in-container chat tools ship UNGATED / the web-origin anti-spoof silently fa
 through. `dispatch-extensions.js` is additionally imported transitively by
 `taskflow-server-entry.ts`, but the chat barrel still needs its own append.
 
+## Concrete installer (DONE)
+`setup/add-taskflow.sh` + the checked-in copy-set manifest `setup/add-taskflow/copy-set.txt`
+implement the channel-style overlay install: fetch the TaskFlow branch -> copy every
+path in the copy-set via `git show <ref>:p > p` -> idempotent grep-then-append the 3
+barrel append-sets above -> host `pnpm run build` (+ mandatory `./container/build.sh`
+in a real install; `TASKFLOW_SKIP_CONTAINER_BUILD=1` for verification). `need_install`
+checks the sentinel overlay file AND all 3 barrels, so re-runs are a clean no-op;
+the append is grep-guarded so a partial barrel re-appends only the missing line.
+
+**Copy-set = 245 fork-owned overlay files.** Derived from the Tier-A fork-manifest
+minus generic-core (phone/group-queue/dm-routing/group-sender/v1-types) minus the
+core extension contracts, PLUS the split-created TaskFlow registrants, then VERIFIED
+by the delete-pristine-build / install-rebuild loop. Two Tier-A entries were
+re-classified as **core** during verification (the pristine-core build named them):
+`src/package-validation.ts{,.test.ts}` — ADR contract #2 keeps `invalidPackageName`
+inline core (three core files import it). The leak `src/container-runner.test.ts`
+(core SEAM) -> `modules/taskflow/container-contributions.js` was fixed by moving the
+4 TaskFlow env-arg describe blocks into the overlay's `container-contributions.test.ts`.
+
+Verified: pristine-core **host** build+tsc GREEN with the overlay deleted; after
+install, host build + container `tsc --noEmit` GREEN, host `pnpm test` 1136 pass /
+4 fail (the known `ensureAgentSecretMode` ONECLI_URL flakes — no resolution/import
+errors), container `bun test` 1914 pass / 0 fail; `emit-hooks.js` +
+`db/web-chat-reply-transform.js` (SEC gates) wire on install; idempotent re-run is a
+no-op.
+
 ## Open items
-- Concrete installer rewrite: the append-set above is recorded but `/add-taskflow`
-  SKILL.md does not yet implement the grep-then-append / copy-set steps (still the
-  legacy v1 wizard). An executable CI guardrail (check out pristine core, run
-  `pnpm test` + `bun test` green; and enumerate top-level `register*` registrants
-  and assert each appears in the documented append-set) would catch drift + the two
-  orphan registrants mechanically. Tracked for the installer-rewrite unit.
+- **Container-side split is incomplete on this branch.** A pristine-core *container*
+  `tsc --noEmit` (overlay deleted) does NOT pass: 4 core SEAM files still import
+  overlay paths — `index.ts`->`./poll-loop.js` (whole-file overlay) + `./mcp-tools/memory.js`;
+  `mcp-tools/core.ts`->`../current-batch.js` (whole-file overlay); `mcp-tools/scheduling.ts`->`../well-formed.js`.
+  The whole-file overlays of upstream files (`poll-loop.ts`, `current-batch.ts`) need a
+  pristine-upstream baseline kept in core that the installer overwrites; the fork-new
+  leaves (`memory.ts` `buildMemoryRecallAddendum`/`pruneBoardMemory`, `well-formed.ts`
+  `truncateChars`) need their core-consumed symbols moved behind a core stub. Tracked
+  as the remaining container decoupling (W2/W5 container leg).
+- An executable CI guardrail (check out pristine core, assert host build green; run
+  the installer, assert `pnpm test` + `bun test` green; enumerate top-level `register*`
+  registrants and assert each appears in the documented append-set) would catch drift +
+  the two orphan registrants mechanically.
 - Contract 10 backfill: `registerBackfillStep` vs whole-file overlay (single consumer).
 - `016-user-roles-unique-indexes`: push upstream as generic hardening vs `module-*` rename.
 - `StartupContext` two-phase (`post-db`/`post-services`) — confirm no near-term hook needs a third.
