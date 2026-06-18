@@ -19,24 +19,22 @@ those and the raw-upstream poll-loop rejects them, re-breaking the build.
 ```bash
 set -euo pipefail
 PRE_INSTALL=origin/core/nanoclaw-pristine   # pre-install core ref (see above)
+source setup/add-taskflow/append-sets.sh    # barrel arrays
+source setup/add-taskflow/lib.sh            # read_copyset (same parse the installer uses)
 
 # 0. Preflight. Only act on an INSTALLED tree, and verify the restore source has
 #    every file we may need to put back — fail loud rather than half-remove.
 [ -f src/modules/taskflow/index.ts ] || { echo "TaskFlow not installed — nothing to remove."; exit 0; }
 git rev-parse --verify "$PRE_INSTALL" >/dev/null 2>&1 || { echo "PRE_INSTALL ref '$PRE_INSTALL' not found (git fetch it, or set your pre-install commit)."; exit 1; }
 
-mapfile -t OVERLAY < <(grep -vE '^\s*#' setup/add-taskflow/copy-set.txt \
-  | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//' | grep -v '^$')
+mapfile -t OVERLAY < <(read_copyset setup/add-taskflow/copy-set.txt)
 
-# 1. Strip the 4 appended barrel imports. Exact-WHOLE-line match (-x) so a line
-#    that is a substring of a legit import is never touched; `|| true` so a fully-
-#    emptied or no-match barrel (grep exit 1) doesn't abort under `set -e`.
-source setup/add-taskflow/append-sets.sh
-strip() { local file=$1; shift; local line
-  for line in "$@"; do
-    { grep -vxF "$line" "$file" || true; } > "$file.tmp"
-    mv "$file.tmp" "$file"
-  done
+# 1. Strip the 4 appended barrel imports. Exact whole-line match (-x) so a line
+#    that is a substring of a legit import is never touched; all of a barrel's
+#    lines in ONE pass; `|| true` so an emptied/no-match barrel doesn't abort.
+strip() { local file=$1; shift
+  { grep -vxFf <(printf '%s\n' "$@") "$file" || true; } > "$file.tmp"
+  mv "$file.tmp" "$file"
 }
 strip "$MODULES_BARREL"  "${MODULES_IMPORTS[@]}"
 strip "$MCP_BARREL"      "${MCP_IMPORTS[@]}"
@@ -51,8 +49,11 @@ for p in "${OVERLAY[@]}"; do rm -f "$p"; done
 #    + any upstream test the overlay replaced). Purely-new overlay files have no
 #    pre-install version and stay deleted. PRE_INSTALL (not raw upstream) keeps the
 #    poll-loop compat shim, so the un-overwritten core index.ts still typechecks.
+#    Explicit `if` (not `&& … || true`) so a real `git checkout` failure surfaces.
 for p in "${OVERLAY[@]}"; do
-  git cat-file -e "$PRE_INSTALL:$p" 2>/dev/null && git checkout "$PRE_INSTALL" -- "$p" || true
+  if git cat-file -e "$PRE_INSTALL:$p" 2>/dev/null; then
+    git checkout "$PRE_INSTALL" -- "$p"
+  fi
 done
 
 # 4. Rebuild host + container.

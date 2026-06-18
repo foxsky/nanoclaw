@@ -20,6 +20,8 @@ COPY_SET="$ROOT/setup/add-taskflow/copy-set.txt"
 BR="${1:-${TASKFLOW_BRANCH:-taskflow-overlay}}"
 # shellcheck source=setup/add-taskflow/append-sets.sh
 source "$ROOT/setup/add-taskflow/append-sets.sh"
+# shellcheck source=setup/add-taskflow/lib.sh
+source "$ROOT/setup/add-taskflow/lib.sh"   # read_copyset
 
 # Resolve the branch ref (local first, then origin/).
 ref=""
@@ -33,13 +35,11 @@ while IFS= read -r f; do ON_BRANCH["$f"]=1; done < <(git -C "$ROOT" ls-tree -r -
 
 declare -A IN_COPYSET=()
 fail=0
-while IFS= read -r raw; do
-  p="${raw%%#*}"; p="$(printf '%s' "$p" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
-  [ -z "$p" ] && continue
+while IFS= read -r p; do
   IN_COPYSET["$p"]=1
   # 1. every copy-set path must be on the payload branch.
   [ -n "${ON_BRANCH[$p]:-}" ] || { echo "FAIL(1): copy-set path missing from $ref: $p"; fail=1; }
-done < "$COPY_SET"
+done < <(read_copyset "$COPY_SET")
 
 # 2. the only non-copy-set file allowed on the payload is README.md.
 for f in "${!ON_BRANCH[@]}"; do

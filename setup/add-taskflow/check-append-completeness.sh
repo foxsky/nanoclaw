@@ -24,6 +24,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COPY_SET="$ROOT/setup/add-taskflow/copy-set.txt"
 # shellcheck source=setup/add-taskflow/append-sets.sh
 source "$ROOT/setup/add-taskflow/append-sets.sh"
+# shellcheck source=setup/add-taskflow/lib.sh
+source "$ROOT/setup/add-taskflow/lib.sh"   # read_copyset / resolve_import / relative_specs
 
 # The core-registry functions wired specifically through the 4 INSTALLER BARRELS
 # (NOT provider/channel/FastAPI-entry registrars — those load via their own roots,
@@ -51,38 +53,16 @@ cd "$ROOT"
 # --- copy-set membership (repo-relative paths) ---------------------------------
 declare -A IN_COPYSET=()
 COPYSET_PATHS=()
-while IFS= read -r raw; do
-  p="${raw%%#*}"; p="$(printf '%s' "$p" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
-  [ -z "$p" ] && continue
-  IN_COPYSET["$p"]=1
-  COPYSET_PATHS+=("$p")
-done < "$COPY_SET"
-
-# Resolve an import spec (./x.js, ../db/y.js) seen in $1's dir to a repo-relative
-# .ts path. Empty if the spec isn't relative.
-resolve_import() {
-  local from_file=$1 spec=$2
-  case "$spec" in
-    ./*|../*) ;;
-    *) return 0 ;;
-  esac
-  local dir target
-  dir="$(dirname "$from_file")"
-  target="$(realpath -m --relative-to="$ROOT" "$ROOT/$dir/$spec")"
-  printf '%s\n' "${target%.js}.ts"
-}
-
-# Extract relative import/from specifiers from a file (covers side-effect
-# `import './x.js'`, `... from './x.js'`, and re-exports `export ... from`).
-relative_specs() {
-  grep -oE "(from|import)[[:space:]]+'(\.[^']+)'" "$1" 2>/dev/null \
-    | grep -oE "'\.[^']+'" | tr -d "'" || true
-}
+while IFS= read -r p; do IN_COPYSET["$p"]=1; COPYSET_PATHS+=("$p"); done < <(read_copyset "$COPY_SET")
 
 fail=0
 
 # --- seeds: resolve each append import; Check A (no dangling append) -----------
-seeds=()
+# Seed the BFS reachable-set directly (no separate seeds[] array): add_seed marks
+# a node reached and enqueues it — used both to seed and inside the BFS.
+declare -A REACHED=()
+frontier=()
+add_seed() { [ -z "${REACHED[$1]:-}" ] && { REACHED["$1"]=1; frontier+=("$1"); }; }
 check_appendset() {
   local barrel=$1; shift
   local line spec target
@@ -95,7 +75,7 @@ check_appendset() {
       fail=1
       continue
     fi
-    seeds+=("$target")
+    add_seed "$target"
   done
 }
 check_appendset "$MODULES_BARREL" "${MODULES_IMPORTS[@]}"
@@ -103,12 +83,7 @@ check_appendset "$MCP_BARREL"     "${MCP_IMPORTS[@]}"
 check_appendset "$MIGRATE_BARREL" "${MIGRATE_IMPORTS[@]}"
 check_appendset "$EXT_BARREL"     "${EXT_IMPORTS[@]}"
 
-# --- BFS reachability over overlay relative imports ---------------------------
-declare -A REACHED=()
-frontier=()
-for s in "${seeds[@]}"; do
-  [ -z "${REACHED[$s]:-}" ] && { REACHED["$s"]=1; frontier+=("$s"); }
-done
+# --- BFS reachability over overlay relative imports (frontier already seeded) --
 while [ ${#frontier[@]} -gt 0 ]; do
   next=()
   for f in "${frontier[@]}"; do

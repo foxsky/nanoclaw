@@ -19,16 +19,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COPY_SET="$ROOT/setup/add-taskflow/copy-set.txt"
+# shellcheck source=setup/add-taskflow/lib.sh
+source "$ROOT/setup/add-taskflow/lib.sh"   # read_copyset / resolve_import / relative_specs
 
-# Documented, accepted container seams (ADR 0006 "Open items"). Keep in sync.
-# Both are UPSTREAM-shaped imports of whole-file overlays (runPollLoop and
-# getCurrentInReplyTo exist in upstream), so the container is overlay-inclusive
-# by design: container index.ts -> ./poll-loop.js (turn runtime);
-# mcp-tools/core.ts -> ../current-batch.js. (memory.js was decoupled via the
-# extension registry — it is no longer a core->overlay import.)
+# Documented, accepted container seams (ADR 0006 "Open items"). Keep in sync with
+# the whole-file-overlay block in copy-set.txt — these two are the SUBSET that
+# produce a core->overlay TS2307 (container index.ts -> ./poll-loop.js turn
+# runtime; mcp-tools/core.ts -> ../current-batch.js). claude.ts/groups.ts are
+# also whole-file overlays but don't leak a core import, so they're NOT here.
+# (memory.js was decoupled via the extension registry — no longer a core import.)
 ALLOWED_SEAMS='poll-loop\.js|current-batch\.js'
 
 [ -f "$COPY_SET" ] || { echo "FAIL: copy-set not found: $COPY_SET"; exit 1; }
+
+# Copy-set membership, built ONCE — reused for the overlay delete AND arm 3.
+declare -A IN_COPYSET=()
+while IFS= read -r p; do IN_COPYSET["$p"]=1; done < <(read_copyset "$COPY_SET")
 
 WT="$(mktemp -d)/nc-split-boundary"
 cleanup() { git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || true; }
@@ -41,11 +47,7 @@ ln -s "$ROOT/container/agent-runner/node_modules" "$WT/container/agent-runner/no
 cd "$WT"
 
 # Delete the overlay (every path in the copy-set) -> pristine core.
-while IFS= read -r raw; do
-  p="${raw%%#*}"; p="$(printf '%s' "$p" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
-  [ -z "$p" ] && continue
-  rm -f "$WT/$p"
-done < "$COPY_SET"
+for p in "${!IN_COPYSET[@]}"; do rm -f "$WT/$p"; done
 
 # 1. Pristine-core HOST build must be green.
 if ! pnpm run build >/tmp/split-boundary-host.log 2>&1; then
@@ -69,21 +71,15 @@ fi
 #    surviving setup/ file imports a path that IS in the copy-set. (Membership,
 #    not filesystem existence — a missing channel file like telegram-pairing.js,
 #    absent because that channel isn't installed, is NOT an overlay leak.)
-declare -A IN_COPYSET=()
-while IFS= read -r raw; do
-  p="${raw%%#*}"; p="$(printf '%s' "$p" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
-  [ -z "$p" ] && continue
-  IN_COPYSET["$p"]=1
-done < "$COPY_SET"
+#    Reuses the IN_COPYSET set built once above.
 setup_bad=""
 while IFS= read -r f; do
-  rel="$(printf '%s' "$f" | sed "s#^$WT/##")"
+  rel="${f#"$WT/"}"
   while IFS= read -r spec; do
     case "$spec" in *.js) ;; *) continue ;; esac
-    tgt="$(realpath -m --relative-to="$WT" "$WT/$(dirname "$rel")/$spec")"
-    tgt="${tgt%.js}.ts"
+    tgt="$(resolve_import "$rel" "$spec" "$WT")"
     [ -n "${IN_COPYSET[$tgt]:-}" ] && setup_bad+="$rel -> $spec (copy-set overlay)"$'\n'
-  done < <(grep -oE "(from|import)[[:space:]]+'(\.[^']+)'" "$f" 2>/dev/null | grep -oE "'\.[^']+'" | tr -d "'")
+  done < <(relative_specs "$f")
 done < <(find "$WT/setup" -name '*.ts' 2>/dev/null)
 if [ -n "$setup_bad" ]; then
   echo "FAIL: a setup/ step imports an overlay (copy-set) path — core->overlay leak the build-only check misses:"
