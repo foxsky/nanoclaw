@@ -27,6 +27,8 @@ import { fileURLToPath } from 'url';
 
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
+import { collectSystemPromptAddenda, runBootSteps } from './extensions.js';
+import './extensions-register.js';
 import { ensureMemoryScaffold } from './memory-scaffold.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
@@ -52,7 +54,9 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
+  // Boot-step extensions (overlay-registered; no-op by default).
+  runBootSteps();
+  const instructions = buildSystemPromptAddendum(config.assistantName || undefined) + collectSystemPromptAddenda();
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
@@ -107,6 +111,10 @@ async function main(): Promise<void> {
     providerName,
     cwd: CWD,
     systemContext: { instructions },
+    // Forwarded for install-overlays whose poll-loop tags outbound rows with the
+    // bot name / agent-group prefix. Upstream's poll-loop ignores them (optional).
+    assistantName: config.assistantName,
+    agentGroupId: config.agentGroupId,
   });
 }
 
