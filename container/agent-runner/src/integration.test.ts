@@ -6,7 +6,7 @@ import { getPendingMessages } from './db/messages-in.js';
 import { getContinuation, setContinuation } from './db/session-state.js';
 import { MockProvider } from './providers/mock.js';
 import type { ProviderExchange } from './providers/types.js';
-import { runPollLoop } from './poll-loop.js';
+import { runPollLoop, __pollDiag } from './poll-loop.js';
 import {
   registerFollowupDrop,
   registerFollowupEndStream,
@@ -556,24 +556,57 @@ describe('poll loop — slash command during active query', () => {
 
     const provider = new BlockingProvider();
     const controller = new AbortController();
-    const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 3000);
+    // DIAG (temporary): reset tick observability, use generous budgets so we MEASURE
+    // timing instead of timing out at 2000ms, and ALWAYS throw a DIAG dump at the end so
+    // the data lands in the CI failure annotation (CI stdout is not retrievable on a fork PR).
+    __pollDiag.ticks = 0;
+    __pollDiag.guardBails = 0;
+    __pollDiag.lastPending = -1;
+    __pollDiag.cmdSeen = false;
+    __pollDiag.abortCalled = false;
+    const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 15000);
 
-    await waitFor(() => provider.queries === 1, 2000);
+    const t0 = Date.now();
+    while (provider.queries < 1 && Date.now() - t0 < 8000) await sleep(25);
+    const queriesAtMs = Date.now() - t0;
+
     insertMessage('m-clear-active', { sender: 'Alice', text: '/clear' }, { platformId: 'chan-1', channelType: 'discord' });
+    const tClear = Date.now();
+    let abortMs = -1;
+    while (Date.now() - tClear < 8000) {
+      if (provider.aborts >= 1) {
+        abortMs = Date.now() - tClear;
+        break;
+      }
+      await sleep(25);
+    }
 
-    await waitFor(() => provider.aborts === 1, 2000);
-    await waitFor(
-      () => getUndeliveredMessages().some((msg) => JSON.parse(msg.content).text === 'Session cleared.'),
-      2000,
-    );
+    let clearedMs = -1;
+    if (abortMs >= 0) {
+      const tc = Date.now();
+      while (Date.now() - tc < 8000) {
+        if (getUndeliveredMessages().some((msg) => JSON.parse(msg.content).text === 'Session cleared.')) {
+          clearedMs = Date.now() - tc;
+          break;
+        }
+        await sleep(25);
+      }
+    }
+
+    const pendingDump = getPendingMessages()
+      .map((m) => `${m.id}:${JSON.parse(m.content).text}`)
+      .join('|');
     controller.abort();
-
-    expect(provider.ends).toBe(0);
-    expect(getContinuation('mock')).toBeUndefined();
-    expect(getPendingMessages()).toHaveLength(0);
-
     await loopPromise.catch(() => {});
-  });
+
+    throw new Error(
+      `DIAG-CLEAR queriesAtMs=${queriesAtMs} abortMs=${abortMs} clearedMs=${clearedMs} ` +
+        `queries=${provider.queries} aborts=${provider.aborts} ends=${provider.ends} ` +
+        `ticks=${__pollDiag.ticks} guardBails=${__pollDiag.guardBails} lastPending=${__pollDiag.lastPending} ` +
+        `cmdSeen=${__pollDiag.cmdSeen} abortCalled=${__pollDiag.abortCalled} ` +
+        `pending=[${pendingDump}] undelivered=${getUndeliveredMessages().length}`,
+    );
+  }, 40000);
 });
 
 /**
