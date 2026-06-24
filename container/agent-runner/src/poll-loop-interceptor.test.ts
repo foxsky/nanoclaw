@@ -79,12 +79,23 @@ class QuerySpyProvider extends MockProvider {
 }
 
 async function runOnce(provider: MockProvider, signal: AbortSignal): Promise<void> {
+  // Own an internal stop signal so the loop ALWAYS exits — on caller abort AND on timeout —
+  // instead of being left to poll forever and steal later tests' messages (see
+  // PollLoopConfig.signal; MockProvider's stream stays open).
+  const stop = new AbortController();
+  if (signal.aborted) stop.abort();
+  else signal.addEventListener('abort', () => stop.abort());
   await Promise.race([
-    runPollLoop({ provider, providerName: 'mock', cwd: '/tmp', signal }),
+    runPollLoop({ provider, providerName: 'mock', cwd: '/tmp', signal: stop.signal }),
     new Promise<void>((_, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')));
     }),
-    new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+    new Promise<void>((_, reject) =>
+      setTimeout(() => {
+        stop.abort();
+        reject(new Error('timeout'));
+      }, 2000),
+    ),
   ]).catch(() => {});
 }
 

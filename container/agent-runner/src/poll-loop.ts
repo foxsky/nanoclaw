@@ -41,18 +41,6 @@ import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
 
-// DIAG (temporary, revert before merge): lets a test observe the follow-up tick
-// from the outside — did the 500ms setInterval fire at all, did it read pending,
-// did it see the command and call abort. Distinguishes timer-starvation from a
-// logic bail. Module-level; a test resets the fields before its loop starts.
-export const __pollDiag = {
-  ticks: 0,
-  guardBails: 0,
-  lastPending: -1,
-  cmdSeen: false,
-  abortCalled: false,
-};
-
 /**
  * Number of consecutive `database disk image is malformed` errors after which
  * the follow-up poll gives up and exits the process. At ACTIVE_POLL_INTERVAL_MS
@@ -522,7 +510,6 @@ export async function processQuery(
   let endedForCommand = false;
   let corruptionStreak = 0;
   const pollHandle = setInterval(() => {
-    __pollDiag.ticks++; // DIAG
     // Loop owner aborted (tests pass config.signal; production leaves it undefined → this never
     // fires → byte-identical upstream). The for-await on query.events would otherwise block until
     // the stream ends on its own, so an abandoned test loop with a long-lived query would leak.
@@ -531,16 +518,12 @@ export async function processQuery(
       query.abort();
       return;
     }
-    if (done || pollInFlight || endedForCommand) {
-      __pollDiag.guardBails++; // DIAG
-      return;
-    }
+    if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 
     void (async () => {
       try {
         const pending = getPendingMessages();
-        __pollDiag.lastPending = pending.length; // DIAG
 
         // Follow-up DROP seam (BEFORE the slash-command check): an overlay may claim
         // follow-up rows that belong to a DIFFERENT (e.g. confined-external) turn —
@@ -572,8 +555,6 @@ export async function processQuery(
         // can block the command (e.g. /clear during a long task) for as
         // long as the turn takes.
         if (active.some((m) => isRunnerCommand(m))) {
-          __pollDiag.cmdSeen = true; // DIAG
-          __pollDiag.abortCalled = true; // DIAG
           log('Pending slash command — aborting active stream so outer loop can process');
           endedForCommand = true;
           query.abort();
